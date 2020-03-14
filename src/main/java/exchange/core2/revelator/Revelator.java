@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.locks.LockSupport;
 
@@ -120,6 +121,7 @@ public final class Revelator implements AutoCloseable {
             long minSequence;
             while (wrapPoint > (minSequence = Math.min(tailFence.getVolatile(), msgStartSequence))) {
                 LockSupport.parkNanos(1L); // TODO: Use waitStrategy to spin? (can cause starvation)
+//                Thread.onSpinWait();
             }
 
             cachedTailPosition = minSequence;
@@ -215,61 +217,85 @@ public final class Revelator implements AutoCloseable {
 
         hdrRecorder.reset();
 
-        try (final AffinityLock lock = AffinityLock.acquireLock()) {
+        try (final AffinityLock lock = AffinityLock.acquireCore()) {
 
 
             final AffinityThreadFactory atf = new AffinityThreadFactory(
-                    AffinityThreadFactory.ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_LOGICAL_CORE);
+                    AffinityThreadFactory.ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_PHYSICAL_CORE);
 
             final Revelator r = Revelator.create(bufferSizeTest, Revelator::handleMessage, atf);
 
             r.start();
 
-
             log.debug("Starting publisher on core: {}", lock.cpuId());
 
-            for (int j = 0; j < 1000; j++) {
+            for (int tps = 2_000_000; tps < 70_000_000; tps += 100_000) {
 
+                latch = new CountDownLatch(1);
 
-                int tps = 10_000_000 + 100_000 * j;
+                final double nanosPerCmd = 1_000_000_000d / tps;
 
-                final int nanosPerCmd = 1_000_000_000 / tps;
-
+                final long startTimeNs = System.nanoTime();
                 final long startTimeMs = System.currentTimeMillis();
 
-                long plannedTimestamp = System.nanoTime();
+                double plannedTimestamp = System.nanoTime();
+
+                long expectedXorData = 0L;
+
+                long lastKnownTimestamp = System.nanoTime();
 
                 final int iterations = 1_000_000;
                 for (int i = 0; i < iterations; i++) {
 
                     plannedTimestamp += nanosPerCmd;
 
-                    while (System.nanoTime() < plannedTimestamp) {
-                        // spin until its time to send next command
-                        Thread.onSpinWait();
+                    if (plannedTimestamp > lastKnownTimestamp) {
+                        while (plannedTimestamp > (lastKnownTimestamp = System.nanoTime())) {
+                            // spin until its time to send next command
+                            Thread.onSpinWait(); // 1us-26  max34
+//                        LockSupport.parkNanos(1L); // 1us-25 max29
+//                         Thread.yield();   // 1us-28  max32
+                        }
                     }
 
 //            log.debug("request {}...", i);
                     final long claim = r.claim(testMsgSize);
 
 //            log.debug("claim={}", claim);
-                    r.writeLongData(claim, 0, plannedTimestamp);
+                    final long msg = (long) plannedTimestamp;
+                    r.writeLongData(claim, 0, msg);
                     for (int k = 8; k < testMsgSize; k += 8) {
                         r.writeLongData(claim, k, i);
                     }
 
+                    expectedXorData = expectedXorData ^ msg;
+
                     r.publish(claim + testMsgSize);
                 }
 
+                final long claim = r.claim(testMsgSize);
+                r.writeLongData(claim, 0, END_MARKER);
+                r.publish(claim + testMsgSize);
 
                 final long processingTimeMs = System.currentTimeMillis() - startTimeMs;
-                final float perfMt = (float) iterations / (float) processingTimeMs / 1000.0f;
-                String tag = String.format("%.3f MT/s", perfMt);
+                final float processingTimeUs = (System.nanoTime() - startTimeNs) / 1000f;
+                final float perfMt = (float) iterations / processingTimeUs;
+                final float targetMt = (float) tps / 1_000_000.0f;
+                String tag = String.format("target:%.3f (%.2fns) actual:%.3f MT/s (%d-%.2f ms)",
+                        targetMt, nanosPerCmd, perfMt, processingTimeMs, processingTimeUs / 1000f);
 
-                Thread.sleep(200);
+                latch.await();
 
                 final Histogram histogram = hdrRecorder.getIntervalHistogram();
-                log.info("{} {}", tag, LatencyTools.createLatencyReportFast(histogram));
+                log.info("{} {} avg={}", tag, LatencyTools.createLatencyReportFast(histogram), (int) avgBatch);
+
+                if (xorData != expectedXorData) {
+                    throw new IllegalStateException("Inconsistent messages");
+//                } else {
+//                    log.debug("XOR:{} processedMessages:{}", xorData, processedMessages);
+                }
+                xorData = 0L;
+                processedMessages = 0;
 
 //            if (histogram.getValueAtPercentile(50) > 10_000_000) {
 //                break;
@@ -280,29 +306,51 @@ public final class Revelator implements AutoCloseable {
     }
 
 
-    final static int testMsgSize = 256;
+    final static int testMsgSize = 48;
 
-    final static int bufferSizeTest = 1024 * 1024;
+    final static int bufferSizeTest = 16 * 1024 * 1024;
     final static int indexMaskTest = bufferSizeTest - 1;
     final static SingleWriterRecorder hdrRecorder = new SingleWriterRecorder(Integer.MAX_VALUE, 2);
 
+    static long xorData = 0L;
+    static int processedMessages = 0;
+
+    static CountDownLatch latch;
+    final static int END_MARKER = Integer.MIN_VALUE + 42;
+
+    static long c = 0;
+
+    static double avgBatch = 1;
+
+    static int cx = 0;
 
     private static void handleMessage(long bufAddr, int offset, int msgSize) {
 
 //        log.debug("Handle message bufAddr={} offset={} msgSize={}", bufAddr, offset, msgSize);
 
+//        double a =  0.0001;
+//        avgBatch = avgBatch * (1.0 - a) + msgSize * a;
 
-        long to = bufAddr + offset + msgSize;
+
+        final long to = bufAddr + offset + msgSize;
         for (long addr = bufAddr + offset; addr < to; addr += testMsgSize) {
 
-
             final long msg = UNSAFE.getLong(addr);
-            final long latency = System.nanoTime() - msg;
-//            log.debug("msg: {}ns", msg);
+            if (msg == END_MARKER) {
+                latch.countDown();
+            } else {
 
-            final long t = Math.min(Math.max(0L, latency), Integer.MAX_VALUE);
-//            log.debug("latency: {}ns", t);
-            hdrRecorder.recordValue(t);
+                xorData = xorData ^ msg;
+//                processedMessages++;
+
+//                if ((msg & (0x1F << 6)) == 0) {
+                if (cx++ == 2000) {
+                    cx = 0;
+                    final long latency = System.nanoTime() - msg;
+                    hdrRecorder.recordValue(latency);
+                }
+            }
+
         }
     }
 
