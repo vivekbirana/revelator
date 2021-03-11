@@ -1,6 +1,7 @@
 package exchange.core2.revelator;
 
 import jdk.internal.vm.annotation.Contended;
+import net.openhft.affinity.AffinityLock;
 import org.HdrHistogram.Histogram;
 import org.HdrHistogram.SingleWriterRecorder;
 import org.slf4j.Logger;
@@ -8,13 +9,14 @@ import org.slf4j.LoggerFactory;
 import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.locks.LockSupport;
 
 public final class Revelator implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(Revelator.class);
 
-    private static final int maxMessageSize = 256; // TODO parameter
+    private static final int maxMessageSize = 2048; // TODO parameter
 
     public static final Unsafe UNSAFE;
 
@@ -34,6 +36,8 @@ public final class Revelator implements AutoCloseable {
 
     private final StageHandler handler;
 
+    private final ThreadFactory threadFactory;
+
     private final Fence headFence = new Fence();
     private final Fence tailFence = new Fence();
 
@@ -48,33 +52,35 @@ public final class Revelator implements AutoCloseable {
 
 
     public static Revelator create(final int size,
-                                   final StageHandler handler) {
+                                   final StageHandler handler,
+                                   final ThreadFactory threadFactory) {
 
 
         final long bufferAddr = UNSAFE.allocateMemory(size + maxMessageSize);
 
 //        final long l = Unsafe.getUnsafe().allocateMemory(32);
 
-        return new Revelator(size, bufferAddr, handler);
+        return new Revelator(size, bufferAddr, handler, threadFactory);
 
     }
 
 
     private Revelator(final int bufferSize,
                       final long bufferAddr,
-                      final StageHandler handler) {
+                      final StageHandler handler,
+                      final ThreadFactory threadFactory) {
 
         this.bufferSize = bufferSize;
         this.bufferAddr = bufferAddr;
         this.indexMask = bufferSize - 1;
         this.handler = handler;
+        this.threadFactory = threadFactory;
     }
 
     public void start() {
 
-
         final BatchFlowHandler batchFlowHandler = new BatchFlowHandler();
-        Thread thread = new Thread(batchFlowHandler);
+        Thread thread = threadFactory.newThread(batchFlowHandler);
         log.info("Starting handler...");
         thread.setName("HANDLER");
         thread.setDaemon(true);
@@ -209,65 +215,74 @@ public final class Revelator implements AutoCloseable {
 
         hdrRecorder.reset();
 
-        final Revelator r = Revelator.create(bufferSizeTest, Revelator::handleMessage);
-
-        r.start();
-
-        for (int j = 0; j < 1000; j++) {
+        try (final AffinityLock lock = AffinityLock.acquireLock()) {
 
 
-            int tps = 10_000_000 + 100_000 * j;
+            final AffinityThreadFactory atf = new AffinityThreadFactory(
+                    AffinityThreadFactory.ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_LOGICAL_CORE);
 
-            final int nanosPerCmd = 1_000_000_000 / tps;
+            final Revelator r = Revelator.create(bufferSizeTest, Revelator::handleMessage, atf);
 
-            final long startTimeMs = System.currentTimeMillis();
+            r.start();
 
-            long plannedTimestamp = System.nanoTime();
 
-            final int iterations = 1_000_000;
-            for (int i = 0; i < iterations; i++) {
+            log.debug("Starting publisher on core: {}", lock.cpuId());
 
-                plannedTimestamp += nanosPerCmd;
+            for (int j = 0; j < 1000; j++) {
 
-                while (System.nanoTime() < plannedTimestamp) {
-                    // spin until its time to send next command
-                    Thread.onSpinWait();
-                }
+
+                int tps = 10_000_000 + 100_000 * j;
+
+                final int nanosPerCmd = 1_000_000_000 / tps;
+
+                final long startTimeMs = System.currentTimeMillis();
+
+                long plannedTimestamp = System.nanoTime();
+
+                final int iterations = 1_000_000;
+                for (int i = 0; i < iterations; i++) {
+
+                    plannedTimestamp += nanosPerCmd;
+
+                    while (System.nanoTime() < plannedTimestamp) {
+                        // spin until its time to send next command
+                        Thread.onSpinWait();
+                    }
 
 //            log.debug("request {}...", i);
-                final long claim = r.claim(testMsgSize);
+                    final long claim = r.claim(testMsgSize);
 
 //            log.debug("claim={}", claim);
-                r.writeLongData(claim, 0, plannedTimestamp);
-                for (int k = 8; k < testMsgSize; k += 8) {
-                    r.writeLongData(claim, k, i);
+                    r.writeLongData(claim, 0, plannedTimestamp);
+                    for (int k = 8; k < testMsgSize; k += 8) {
+                        r.writeLongData(claim, k, i);
+                    }
+
+                    r.publish(claim + testMsgSize);
                 }
 
-                r.publish(claim + testMsgSize);
-            }
 
+                final long processingTimeMs = System.currentTimeMillis() - startTimeMs;
+                final float perfMt = (float) iterations / (float) processingTimeMs / 1000.0f;
+                String tag = String.format("%.3f MT/s", perfMt);
 
-            final long processingTimeMs = System.currentTimeMillis() - startTimeMs;
-            final float perfMt = (float) iterations / (float) processingTimeMs / 1000.0f;
-            String tag = String.format("%.3f MT/s", perfMt);
+                Thread.sleep(200);
 
-            Thread.sleep(200);
-
-            final Histogram histogram = hdrRecorder.getIntervalHistogram();
-            log.info("{} {}", tag, LatencyTools.createLatencyReportFast(histogram));
+                final Histogram histogram = hdrRecorder.getIntervalHistogram();
+                log.info("{} {}", tag, LatencyTools.createLatencyReportFast(histogram));
 
 //            if (histogram.getValueAtPercentile(50) > 10_000_000) {
 //                break;
 //            }
+            }
         }
-
 
     }
 
 
-    final static int testMsgSize = 128;
+    final static int testMsgSize = 256;
 
-    final static int bufferSizeTest = 256 * 1024;
+    final static int bufferSizeTest = 1024 * 1024;
     final static int indexMaskTest = bufferSizeTest - 1;
     final static SingleWriterRecorder hdrRecorder = new SingleWriterRecorder(Integer.MAX_VALUE, 2);
 
