@@ -3,11 +3,10 @@ package exchange.core2.revelator;
 import jdk.internal.vm.annotation.Contended;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import sun.misc.Unsafe;
 
 public final class Fence {
 
-    private final static Logger logger = LoggerFactory.getLogger(Revelator.class);
+    private final static Logger logger = LoggerFactory.getLogger(Fence.class);
 
     @Contended
     protected volatile long value = -1;

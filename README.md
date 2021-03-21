@@ -10,6 +10,7 @@ Cache-friendly - same thread can handle different processing stages.
 Dynamic power balancing.
 Deep latency monitoring.
 Conditional fences.
+Per-fence wait strategy.
 Flexible batching.
 Unbounded buffers support.
 
