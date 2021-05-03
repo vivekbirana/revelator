@@ -1,6 +1,5 @@
 package exchange.core2.revelator;
 
-import jdk.internal.vm.annotation.Contended;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sun.misc.Unsafe;
@@ -12,8 +11,6 @@ import java.util.concurrent.locks.LockSupport;
 public final class Revelator implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(Revelator.class);
-
-    private static final int maxMessageSize = 2048; // TODO parameter
 
     public static final Unsafe UNSAFE;
 
@@ -44,10 +41,10 @@ public final class Revelator implements AutoCloseable {
 
     private long tailStrike = 0L;
 
-    // to avoid braking
-    // number of bytes  - for current loop
-    @Contended
-    private int messageExtension = 0;
+//     to avoid braking
+//     number of bytes  - for current loop
+//    @Contended
+//    private int messageExtension = 0;
 
 
     public static Revelator create(final int size,
@@ -55,7 +52,9 @@ public final class Revelator implements AutoCloseable {
                                    final ThreadFactory threadFactory) {
 
 
-        final long bufferAddr = UNSAFE.allocateMemory(size + maxMessageSize);
+        final long bufferAddr = UNSAFE.allocateMemory(size);
+
+        log.info("bufferAddr={}", String.format("%X", bufferAddr));
 
 //        final long l = Unsafe.getUnsafe().allocateMemory(32);
 
@@ -85,6 +84,7 @@ public final class Revelator implements AutoCloseable {
                 headFence,
                 tailFence,
                 indexMask,
+                bufferSize,
                 bufferAddr);
 
         Thread thread = threadFactory.newThread(batchFlowHandler);
@@ -95,18 +95,108 @@ public final class Revelator implements AutoCloseable {
     }
 
 
-    public long claim(int msgSize) {
+    /**
+     * Claim space for single message
+     *
+     * @param claimingPayloadSize
+     * @return
+     */
+    public long claimSingleMessage(final int claimingPayloadSize,
+                                   final long timestamp,
+                                   final long correlationId,
+                                   final byte messageType) {
 
-        if (msgSize < 1 || msgSize > maxMessageSize) {
-            throw new IllegalArgumentException("n must be > 0 and < maxMessageSize");
+        if (messageType < 1 || messageType > 31) {
+            throw new IllegalArgumentException("message type should be in range: 1..31");
         }
 
-        final long msgStartSequence = reservedPosition;
-        reservedPosition += msgSize;
-        final long wrapPoint = reservedPosition - bufferSize;
+        if ((correlationId >> 56) != 0) {
+            throw new IllegalArgumentException("message type should be in range: 0..2^56-1");
+        }
+
+        // check message size alignment to long
+        if ((claimingPayloadSize & 7) != 0) {
+            throw new IllegalArgumentException("payload size should have 8*N size");
+        }
+
+        // calculate expected message size
+        final int payloadSizeLongs = claimingPayloadSize >> 3;
+        final int headerSize = payloadSizeLongs < 7 ? 16 : 24;
+        final int fullMessageSize = claimingPayloadSize + headerSize;
+
+        if (claimingPayloadSize < 0 || fullMessageSize > bufferSize) {
+            throw new IllegalArgumentException("n must be >= 0 and < bufferSize");
+        }
+
+        long msgStartSequence = reservedPosition;
+        this.reservedPosition += fullMessageSize;
+        final long wrapPoint = this.reservedPosition - bufferSize;
+
+        // check if new message can fit into remaining buffer
+        int index = (int) (msgStartSequence & indexMask);
+        final long remainingSpaceBytes = bufferSize - index;
+        if (remainingSpaceBytes < fullMessageSize) {
+            // can not fit - write empty message that will be ignored by headers
+
+//            log.debug("Can not fit message beacuse msgStartSequence&mask={} fullMessageSize={} bufferSize={} : SKIP remainingSpaceBytes={}",
+//                    index, fullMessageSize, bufferSize, remainingSpaceBytes);
+
+            // write 0 message, indicating that reader should start from buffer
+            // there is always at least 8 bytes available due to alignment (only need to check wrap point before writing)
+            // so we check wrap point for extension and claimed message both (just to do it once)
+            wrapPointCheckWaitUpdate(msgStartSequence, wrapPoint + remainingSpaceBytes);
+            writeLongDataUnsafe(index, 0L);
+
+            // always use 24 byte message
+//            final long sizeEncoded = 7L << 61;
+//            final long blankMsgSizeBytes = bufferSize - (msgStartSequence & indexMask) - 24;
+//            final long blankMsgSizeLongs = blankMsgSizeBytes >> 3;
+//
+//            writeLongData(msgStartSequence + 8, sizeEncoded | correlationId);
+//            writeLongData(msgStartSequence + 16, blankMsgSizeLongs);
+
+            index = 0;
+            msgStartSequence += remainingSpaceBytes;
+            this.reservedPosition += remainingSpaceBytes;
+        } else {
 
 //        log.debug("msgStartSequence={} new reservedPosition={} wrapPoint={}",
 //                msgStartSequence, reservedPosition, wrapPoint);
+
+            wrapPointCheckWaitUpdate(msgStartSequence, wrapPoint);
+        }
+
+//        if (extension >= 0) {
+//            // safe to do it because all consumers are processing between 'cachedTailPosition' and 'nextSequence'
+//            // messageExtension will be read only after headFence is updated by following publish operation
+//            // messageExtension will not be read after last handler updated tailFence
+//            messageExtension = extension;
+//        }
+
+//        log.debug("WRITING HEADER correlationId={}", correlationId);
+
+        // write header
+
+        final long sizeEncoded = Math.min((long) payloadSizeLongs, 7) << 61;
+
+        final long msgTypeEncoded = ((long) messageType) << 56;
+
+        writeLongDataUnsafe(index, sizeEncoded | msgTypeEncoded | correlationId);
+        writeLongDataUnsafe(index + 8, timestamp);
+
+        if (payloadSizeLongs >= 7) {
+            writeLongDataUnsafe(index + 16, payloadSizeLongs);
+        }
+
+        final long payloadStartSeq = msgStartSequence + headerSize;
+
+//        log.debug("WRITING HEADER DONE payloadStartSeq={} index={} claimingPayloadSize={}",
+//                payloadStartSeq, payloadStartSeq & indexMask, claimingPayloadSize);
+
+        return payloadStartSeq;
+    }
+
+    private void wrapPointCheckWaitUpdate(long msgStartSequence, long wrapPoint) {
 
         /*                   publishedPosition            nextSequence
         ..............................|........................|.........................................................
@@ -130,49 +220,41 @@ public final class Revelator implements AutoCloseable {
 //                Thread.onSpinWait();
 //                Thread.yield();
 
-                tailStrike ++;
+                tailStrike++;
             }
 
             cachedTailPosition = minSequence;
         }
-
-        final int extension = (int) (msgStartSequence & indexMask) + msgSize - bufferSize;
-
-        if (extension >= 0) {
-            // safe to do it because all consumers are processing between 'cachedTailPosition' and 'nextSequence'
-            // messageExtension will be read only after headFence is updated by following publish operation
-            // messageExtension will not be read after last handler updated tailFence
-            messageExtension = extension;
-        }
-
-
-        return msgStartSequence;
     }
 
     public void writeLongData(long sequence, int offset, long value) {
         final int idx = (int) sequence & indexMask;
-        UNSAFE.putLong(bufferAddr + idx + offset, value);
+        final long address = bufferAddr + idx + offset;
+//        log.debug("WRITING LONG OFFSET={}", address - bufferAddr);
+        UNSAFE.putLong(address, value);
+//        log.debug("WRITING LONG DONE");
     }
 
-    public void writeLongData(long offset, long value) {
-        UNSAFE.putLong(bufferAddr + offset, value);
+    public void writeLongDataUnsafe(int index, long value) {
+        UNSAFE.putLong(bufferAddr + index, value);
     }
 
 
     public void publish(long positionPlusSize) {
+//        log.debug("PUBLISH positionPlusSize={}", positionPlusSize);
         headFence.lazySet(positionPlusSize);
         // todo waitStrategy.signalAllWhenBlocking();
     }
 
-    int getMessageExtension(){
-        return messageExtension;
-    }
+//    int getMessageExtension() {
+//        return messageExtension;
+//    }
 
-    public int getBufferSize(){
+    public int getBufferSize() {
         return bufferSize;
     }
 
-    public int getIndexMask(){
+    public int getIndexMask() {
         return indexMask;
     }
 
