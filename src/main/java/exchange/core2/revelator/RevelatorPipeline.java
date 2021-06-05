@@ -2,6 +2,8 @@ package exchange.core2.revelator;
 
 
 import java.util.Arrays;
+import java.util.function.Supplier;
+import java.util.stream.IntStream;
 
 /*
  * Message:
@@ -17,108 +19,193 @@ import java.util.Arrays;
  *
  *
  */
-public class RevelatorPipeline<S> implements Runnable {
+public class RevelatorPipeline<S extends PipelineSession> implements Runnable {
 
+    private static final long WORK_TRIGGER_MAX_VALUE = Long.MAX_VALUE >> 1;
 
     private final int numHandlers;
     private final RevelatorStageHandler<S>[] handlers;
-    private final int pipelineSize = 10;
+    private final int PIPELINE_SIZE = 8; // should be be 2^N
     private final S[] sessions;
 
-    private final Fence headFence;
-    private final Fence tailFence;
-//
-//
-//    private final int bufferSize;
-//    private final int indexMask;
-//    private final long bufferAddr;
+    private final Fence incomingFence;
+    private final Fence outgoingFence;
 
 
-    private final int workWeights[];
+    private final int indexMask;
+    private final long bufferAddr;
+
+
+    private final int[] workWeights;
 //    private final int missWeights[];
 
 
     public RevelatorPipeline(final RevelatorStageHandler<S>[] handlers,
-                             final S[] sessions,
-                             final Fence headFence,
-                             final Fence tailFence) {
+                             final Supplier<S> sessionsFactory,
+                             final Fence incomingFence,
+                             final Fence outgoingFence,
+                             int indexMask,
+                             long bufferAddr) {
 
         this.handlers = handlers;
         this.numHandlers = handlers.length;
-        this.sessions = sessions;
+        this.sessions = createSessions(sessionsFactory, PIPELINE_SIZE);
         this.workWeights = Arrays.stream(handlers).mapToInt(RevelatorStageHandler::getHitWorkWeight).toArray();
+        this.incomingFence = incomingFence;
+        this.outgoingFence = outgoingFence;
+        this.indexMask = indexMask;
+        this.bufferAddr = bufferAddr;
+    }
 
-        this.headFence = headFence;
-        this.tailFence = tailFence;
+    @SuppressWarnings("unchecked")
+    private static <S> S[] createSessions(Supplier<S> sessionsFactory, final int size) {
+        return (S[]) IntStream.range(0, size)
+                .mapToObj(i -> sessionsFactory.get())
+                .toArray(x -> new PipelineSession[size]);
     }
 
 
     @Override
     public void run() {
 
-        final long handlersOffset[] = new long[handlers.length];
-        final long workTriggers[] = new long[handlers.length];
-        long headWorkTrigger = 0L;
+        final int pipelineMask = PIPELINE_SIZE - 1;
+
+
+        final long[] handlerWorkTriggers = new long[numHandlers];
+//        long headWorkTrigger = 0L;
         long workCounter = 0L;
 
-        long headOffset = 0;
-        long tailOffset = 0;
+        long headSequence = -1L; // processed (last known) sequence
+        long tailSequence = -1L;
 
-        boolean batchCompleted = true;
+        // processed (last known) sequence by each handler
+        final long[] handlerSequence = new long[numHandlers];
+        for (int i = 0; i < numHandlers; i++) handlerSequence[i] = -1;
+
+        long initializerOffset = 0L;
+        long availableOffset = 0L;
+
 
         while (true) {
 
-            // try to wait for headFence if it is time for that
-            if (headWorkTrigger >= workCounter) {
-                workCounter++;
-                long availableOffset;
-                while ((availableOffset = headFence.getVolatile()) <= headOffset) {
+            // always work counter
+            workCounter++;
 
-                    if (!batchCompleted) {
-                        // incrementing work trigger for headFence
-                        headWorkTrigger = workCounter + 5;
-                        break;
-                    }
+            // gatingSequence is a barrier to protect sessions queue from wrapping:
+            long gatingSequence = handlerSequence[numHandlers - 1] + PIPELINE_SIZE;
 
-                    Thread.onSpinWait();
-                }
+            // check for new messages or init new sessions only if there some space in the pipeline
+            if (tailSequence != gatingSequence) {
+
+                // try to wait for incomingFence if it is time for that
+                // availableOffset will become larger than initializerOffset if new messages arrived
+//                if (workCounter >= headWorkTrigger) {
+
+                // check fence once if batch is not completed yet (no need to spin here)
+                // otherwise spin on fence volatile read
+                //do {
+                //  workCounter++;
+                availableOffset = incomingFence.getVolatile();
+                //Thread.onSpinWait();
+                //} while (availableOffset <= initializerOffset);
 
                 // set to known head offset
-                headOffset = availableOffset;
+//                }
+
+                // parse new messages if there are some
+                while (initializerOffset < availableOffset) {
+
+//            log.debug("reading at index={} ({}<{})",(int) (positionSeq & indexMask), positionSeq , availableSeq);
+
+                    final long headerStartAddress = bufferAddr + (int) (initializerOffset & indexMask);
+
+                    final long header1 = Revelator.UNSAFE.getLong(headerStartAddress);
+
+                    if (header1 == 0L) {
+                        // empty message - skip until end of the buffer
+                        initializerOffset = (initializerOffset | indexMask) + 1;
+                        continue;
+                    }
+
+                    tailSequence++;
+
+                    final S session = sessions[(int) tailSequence & pipelineMask];
+
+                    session.globalOffset = initializerOffset;
+                    session.correlationId = header1 & 0x00FF_FFFF_FFFF_FFFFL;
+
+                    final int header2 = (int) (header1 >>> 56);
+                    session.messageType = (byte) (header2 & 0x7);
+
+                    // TODO throw shutdown signal exception
+
+                    session.timestamp = Revelator.UNSAFE.getLong(headerStartAddress + 8);
+                    session.payloadSize = (int) Revelator.UNSAFE.getLong(headerStartAddress + 16) << 3;
+
+                    if (tailSequence == gatingSequence) {
+                        break;
+                    }
+
+                }
             }
 
+            // handlers cycle - each handler processed once
+            // handler skip if was unsuccessfully processed recently (don't spin, do another work instead)
+            long prevHandlerSequence = tailSequence;
+            for (int handlerIdx = 0; handlerIdx < numHandlers; handlerIdx++) {
 
-            // check triggers
+                long sequence = handlerSequence[handlerIdx];
 
-            int handlerToApply = numHandlers - 1;
-            while (handlerToApply >= 0) {
+                // never can go in front of previous handler
+                // first handler has 'tailSequence' as a barrier, meaning it can only process messages with session
+                if (sequence <= prevHandlerSequence) {
 
-                // previous handler offset
-                final long prevHandlerOffset = handlerToApply == 0
-                        ? Math.min(headOffset, handlersOffset[handlers.length - 1] + pipelineSize)
-                        : handlersOffset[handlerToApply - 1];
+                    // check if it is time to process
+                    if (workCounter >= handlerWorkTriggers[handlerIdx]) {
 
-                // can only progress if there is something to process
-                if(handlersOffset[handlerToApply] < prevHandlerOffset ){
-                    // should reach workCounter
-                    if (workCounter > workTriggers[handlerToApply]) {
-                        break;
+                        // increment work counter to indicate some work was done
+                        final long workWeight = workWeights[handlerIdx];
+                        workCounter += workWeight;
+
+                        sequence++;
+                        // extract next message session and try to process it
+                        final S session = sessions[(int) (sequence) & pipelineMask];
+                        final boolean success = handlers[handlerIdx].process(session);
+
+                        if (success) {
+                            // successful processing - move sequence forward and update it
+                            handlerSequence[handlerIdx] = sequence;
+
+                            // every time last handler makes progress - update outgoingFence
+                            // TODO check if it slows down compared to publishing once-by-batch in disruptor
+                            if (handlerIdx == numHandlers - 1) {
+                                outgoingFence.lazySet(session.globalOffset);
+                            }
+
+                        } else {
+                            // not - postpone next call by some constant
+                            handlerWorkTriggers[handlerIdx] = workCounter + (workWeight << 2);
+                            sequence--;
+                        }
+
+                    } else {
+                        // always make some progress
+                        workCounter++;
                     }
                 }
 
-                handlerToApply--;
+                prevHandlerSequence = sequence;
             }
 
-
-            if (handlerToApply != -1) {
-                // handlers[handlerToApply].process(  );
-            }
-
-
-            // read one by one
-            // call handlers[0] - if return false - go to any free stage;
-            //
-
+            // work counters wrapping protection
+//            if (workCounter > WORK_TRIGGER_MAX_VALUE) {
+//                workCounter -= WORK_TRIGGER_MAX_VALUE;
+//                for (int handlerIdx = 0; handlerIdx < numHandlers; handlerIdx++) {
+//                    if (handlerWorkTriggers[handlerIdx] > 0) {
+//                        handlerWorkTriggers[handlerIdx] -= WORK_TRIGGER_MAX_VALUE;
+//                    }
+//                }
+//            }
 
         }
 

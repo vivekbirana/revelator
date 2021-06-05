@@ -86,7 +86,6 @@ public final class BatchFlowHandler implements Runnable {
 //            log.debug("{}", String.format("correlationId=%X = %d", correlationId, correlationId));
 //            log.debug("{}", String.format("header2=%X", header2));
 
-                final int msgSizeLongsCompact = header2 >> 5;
                 final byte msgType = (byte) (header2 & 0x7);
 
 //            log.debug("{}", String.format("msgSizeLongsCompact=%X", msgSizeLongsCompact));
@@ -94,21 +93,12 @@ public final class BatchFlowHandler implements Runnable {
 
                 final long timestamp = Revelator.UNSAFE.getLong(headerStartAddress + 8);
 
-                final int payloadSize;
-                final int headerSize;
-                if (msgSizeLongsCompact == 7) {
-                    payloadSize = (int) Revelator.UNSAFE.getLong(headerStartAddress + 16) << 3;
+                final int payloadSize = (int) Revelator.UNSAFE.getLong(headerStartAddress + 16) << 3;
 //                log.debug("custom payloadSize={}", payloadSize);
-                    headerSize = 24;
-                } else {
-                    payloadSize = msgSizeLongsCompact << 3;
-//                log.debug("compact payloadSize={}", payloadSize);
-                    headerSize = 16;
-                }
 
-                final long messageStartAddress = headerStartAddress + headerSize;
+                final long messageStartAddress = headerStartAddress + Revelator.MSG_HEADER_SIZE;
                 if (messageStartAddress + payloadSize > bufferAddr + bufferSize) {
-                    throw new IllegalStateException("Failed to decode message: headerSize=" + headerSize
+                    throw new IllegalStateException("Failed to decode message: headerSize=" + Revelator.MSG_HEADER_SIZE
                             + " payloadSize=" + payloadSize
                             + " correlationId=" + correlationId
                             + " bufferAddr=" + bufferAddr
@@ -130,7 +120,7 @@ public final class BatchFlowHandler implements Runnable {
 
 //            log.debug("positionSeq: {}->{} ", positionSeq, positionSeq + headerSize + payloadSize );
 
-                positionSeq += headerSize + payloadSize;
+                positionSeq += Revelator.MSG_HEADER_SIZE + payloadSize;
             }
 
             tailFence.lazySet(availableSeq);

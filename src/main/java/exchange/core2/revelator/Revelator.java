@@ -12,6 +12,8 @@ public final class Revelator implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(Revelator.class);
 
+    public static final int MSG_HEADER_SIZE = 24;
+
     public static final Unsafe UNSAFE;
 
     static {
@@ -120,9 +122,7 @@ public final class Revelator implements AutoCloseable {
         }
 
         // calculate expected message size
-        final int payloadSizeLongs = claimingPayloadSize >> 3;
-        final int headerSize = payloadSizeLongs < 7 ? 16 : 24;
-        final int fullMessageSize = claimingPayloadSize + headerSize;
+        final int fullMessageSize = claimingPayloadSize + MSG_HEADER_SIZE;
 
         if (claimingPayloadSize < 0 || fullMessageSize > bufferSize) {
             throw new IllegalArgumentException("n must be >= 0 and < bufferSize");
@@ -177,18 +177,16 @@ public final class Revelator implements AutoCloseable {
 
         // write header
 
-        final long sizeEncoded = Math.min((long) payloadSizeLongs, 7) << 61;
 
         final long msgTypeEncoded = ((long) messageType) << 56;
 
-        writeLongDataUnsafe(index, sizeEncoded | msgTypeEncoded | correlationId);
+        // TODO put UserCookie (4bytes), size (2bytes - 512K max msg size)
+
+        writeLongDataUnsafe(index, msgTypeEncoded | correlationId);
         writeLongDataUnsafe(index + 8, timestamp);
+        writeLongDataUnsafe(index + 16, claimingPayloadSize >> 3);
 
-        if (payloadSizeLongs >= 7) {
-            writeLongDataUnsafe(index + 16, payloadSizeLongs);
-        }
-
-        final long payloadStartSeq = msgStartSequence + headerSize;
+        final long payloadStartSeq = msgStartSequence + MSG_HEADER_SIZE;
 
 //        log.debug("WRITING HEADER DONE payloadStartSeq={} index={} claimingPayloadSize={}",
 //                payloadStartSeq, payloadStartSeq & indexMask, claimingPayloadSize);
