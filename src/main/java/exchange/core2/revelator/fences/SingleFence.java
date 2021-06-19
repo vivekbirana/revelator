@@ -1,12 +1,13 @@
-package exchange.core2.revelator;
+package exchange.core2.revelator.fences;
 
+import exchange.core2.revelator.Revelator;
 import jdk.internal.vm.annotation.Contended;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public final class Fence {
+public final class SingleFence implements IFence {
 
-    private final static Logger logger = LoggerFactory.getLogger(Fence.class);
+    private final static Logger logger = LoggerFactory.getLogger(SingleFence.class);
 
     @Contended
     protected volatile long value = -1;
@@ -18,7 +19,7 @@ public final class Fence {
     // todo from disruptor
     static {
         try {
-            VALUE_OFFSET = Revelator.UNSAFE.objectFieldOffset(Fence.class.getDeclaredField("value"));
+            VALUE_OFFSET = Revelator.UNSAFE.objectFieldOffset(SingleFence.class.getDeclaredField("value"));
             logger.debug("VALUE_OFFSET={}", VALUE_OFFSET);
         } catch (final Exception e) {
             throw new RuntimeException(e);
@@ -31,8 +32,8 @@ public final class Fence {
      *
      * @return The current value of the sequence.
      */
-    public long getVolatile()
-    {
+    @Override
+    public long getVolatile(final long ignore) {
         return value;
     }
 
@@ -44,8 +45,7 @@ public final class Fence {
      *
      * @param value The new value for the sequence.
      */
-    public void lazySet(final long value)
-    {
+    public void lazySet(final long value) {
         Revelator.UNSAFE.putOrderedLong(this, VALUE_OFFSET, value);
     }
 
@@ -57,8 +57,7 @@ public final class Fence {
      *
      * @param value The new value for the sequence.
      */
-    public void setVolatile(final long value)
-    {
+    public void setVolatile(final long value) {
         Revelator.UNSAFE.putLongVolatile(this, VALUE_OFFSET, value);
     }
 

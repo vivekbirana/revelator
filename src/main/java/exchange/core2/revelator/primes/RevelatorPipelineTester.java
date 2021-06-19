@@ -1,32 +1,62 @@
-package exchange.core2.revelator;
+package exchange.core2.revelator.primes;
 
+import exchange.core2.revelator.LatencyTools;
+import exchange.core2.revelator.Revelator;
+import exchange.core2.revelator.processors.ProcessorsFactories;
+import exchange.core2.revelator.utils.AffinityThreadFactory;
 import net.openhft.affinity.AffinityLock;
 import org.HdrHistogram.Histogram;
 import org.HdrHistogram.SingleWriterRecorder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 
-public final class RevelatorTester {
+public final class RevelatorPipelineTester {
 
-    private static final Logger log = LoggerFactory.getLogger(Revelator.class);
+    private static final Logger log = LoggerFactory.getLogger(RevelatorPipelineTester.class);
+
+    private static final String HMAC_SHA_256 = "HmacSHA256";
+
 
     public static void main(String[] args) throws InterruptedException {
 
         final Random rand = new Random(1L);
+
+        byte[] secretKey = new byte[32];
+        rand.nextBytes(secretKey);
+
+        log.info("Secret {}", Arrays.toString(secretKey));
+
+        byte[] hmacSha256 = null;
 
         hdrRecorder.reset();
 
         try (final AffinityLock lock = AffinityLock.acquireCore()) {
 
 
+            final Mac mac = Mac.getInstance(HMAC_SHA_256);
+            final SecretKeySpec secretKeySpec = new SecretKeySpec(secretKey, HMAC_SHA_256);
+            mac.init(secretKeySpec);
+//            hmacSha256 = mac.doFinal(message);
+
+            final byte[] messageArray = new byte[64];
+
+
             final AffinityThreadFactory atf = new AffinityThreadFactory(
                     AffinityThreadFactory.ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_PHYSICAL_CORE);
 
-            final Revelator r = Revelator.create(bufferSizeTest, RevelatorTester::handleMessage, atf);
+            final Revelator r = Revelator.create(
+                    bufferSizeTest,
+                    ProcessorsFactories.single(RevelatorPipelineTester::handleMessage),
+                    atf);
 
             r.start();
 
@@ -103,12 +133,11 @@ public final class RevelatorTester {
 
 //                log.debug("FINAL PUBLISH DONE");
 
-                final long processingTimeMs = System.currentTimeMillis() - startTimeMs;
                 final float processingTimeUs = (System.nanoTime() - startTimeNs) / 1000f;
                 final float perfMt = (float) iterationsPerTestCycle / processingTimeUs;
                 final float targetMt = (float) tps / 1_000_000.0f;
-                String tag = String.format("%.3f (%.2fns) real:%.3f MT/s %.0f%%",
-                        targetMt, picosPerCmd / 1024.0, perfMt, perfMt / targetMt * 100.0);
+                final String tag = String.format("%.2fns %.3f -> %.3f MT/s %.0f%%",
+                        picosPerCmd / 1024.0, targetMt, perfMt, perfMt / targetMt * 100.0);
 
                 latch.await();
 
@@ -132,6 +161,8 @@ public final class RevelatorTester {
 //                break;
 //            }
             }
+        } catch (NoSuchAlgorithmException | InvalidKeyException e) {
+            e.printStackTrace();
         }
 
     }

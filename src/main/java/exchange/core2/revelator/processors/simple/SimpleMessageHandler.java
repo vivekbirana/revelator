@@ -1,6 +1,6 @@
-package exchange.core2.revelator;
+package exchange.core2.revelator.processors.simple;
 
-public interface StageHandler {
+public interface SimpleMessageHandler {
 
     /**
      * Allows batching

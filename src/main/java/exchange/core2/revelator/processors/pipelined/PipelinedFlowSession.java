@@ -1,6 +1,6 @@
-package exchange.core2.revelator;
+package exchange.core2.revelator.processors.pipelined;
 
-public class PipelineSession {
+public class PipelinedFlowSession {
 
     public long globalOffset;
     public int payloadSize;

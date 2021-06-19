@@ -1,4 +1,4 @@
-package exchange.core2.revelator;
+package exchange.core2.revelator.utils;
 
 import net.openhft.affinity.AffinityLock;
 import org.jetbrains.annotations.NotNull;

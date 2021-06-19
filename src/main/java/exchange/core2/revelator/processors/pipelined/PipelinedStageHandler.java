@@ -1,6 +1,6 @@
-package exchange.core2.revelator;
+package exchange.core2.revelator.processors.pipelined;
 
-public interface RevelatorStageHandler<S extends PipelineSession> {
+public interface PipelinedStageHandler<S extends PipelinedFlowSession> {
 
     /**
      * Process single message

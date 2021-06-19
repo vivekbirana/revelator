@@ -1,5 +1,8 @@
-package exchange.core2.revelator;
+package exchange.core2.revelator.processors;
 
+import exchange.core2.revelator.fences.IFence;
+import exchange.core2.revelator.fences.SingleFence;
+import exchange.core2.revelator.processors.simple.SimpleMessageHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -7,23 +10,31 @@ public final class GenericMultiProcessor implements Runnable {
 
     private static final Logger log = LoggerFactory.getLogger(GenericMultiProcessor.class);
 
-    private final Revelator revelator;
-    private final StageHandler handler;
+    private final SimpleMessageHandler handler;
 
-    private final Fence headFence;
-    private final Fence tailFence;
+    private final IFence inboundFence;
+    private final SingleFence releasingFence;
 
     private final int indexMask;
+    private final int bufferSize;
     private final long bufferAddr;
 
-    public GenericMultiProcessor(Revelator revelator, StageHandler handler, Fence headFence, Fence tailFence, int indexMask, long bufferAddr) {
-        this.revelator = revelator;
+
+    public GenericMultiProcessor(SimpleMessageHandler handler,
+                                 IFence inboundFence,
+                                 SingleFence releasingFence,
+                                 int indexMask,
+                                 int bufferSize,
+                                 long bufferAddr) {
+
         this.handler = handler;
-        this.headFence = headFence;
-        this.tailFence = tailFence;
+        this.inboundFence = inboundFence;
+        this.releasingFence = releasingFence;
         this.indexMask = indexMask;
         this.bufferAddr = bufferAddr;
+        this.bufferSize = bufferSize;
     }
+
 
     @Override
     public void run() {
@@ -40,7 +51,7 @@ public final class GenericMultiProcessor implements Runnable {
 
             lastProcessed = available;
 
-            tailFence.lazySet(available);
+            releasingFence.lazySet(available);
         }
 
 
@@ -80,7 +91,7 @@ public final class GenericMultiProcessor implements Runnable {
 
     private long waitFenceBlocking(long lastProcessed) {
         long available;
-        while ((available = headFence.getVolatile()) <= lastProcessed) {
+        while ((available = inboundFence.getVolatile(lastProcessed)) <= lastProcessed) {
             // TODO wait strategy
             Thread.onSpinWait();
         }
@@ -88,6 +99,6 @@ public final class GenericMultiProcessor implements Runnable {
     }
 
     private long getFenceOnce(long lastProcessed) {
-        return headFence.getVolatile();
+        return inboundFence.getVolatile(lastProcessed);
     }
 }

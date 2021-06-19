@@ -1,10 +1,16 @@
 package exchange.core2.revelator;
 
+import exchange.core2.revelator.fences.IFence;
+import exchange.core2.revelator.fences.SingleFence;
+import exchange.core2.revelator.processors.IFlowProcessorsFactory;
+import exchange.core2.revelator.processors.IFlowProcessor;
+import org.agrona.BitUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
+import java.util.List;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.locks.LockSupport;
 
@@ -30,70 +36,84 @@ public final class Revelator implements AutoCloseable {
     private final int indexMask;
     private final long bufferAddr;
 
-    private final StageHandler handler;
+    private final List<? extends IFlowProcessor> processors;
 
     private final ThreadFactory threadFactory;
 
-    private final Fence headFence = new Fence();
-    private final Fence tailFence = new Fence();
+    private final SingleFence inboundFence; // single publisher
+
+    private final IFence releasingFence;
 
     private long reservedPosition = 0L; // nextValue = single writer sequencer position in Disruptor
 
-    private long cachedTailPosition = 0L; // cachedValue = min gating sequence in Disruptor
+    private long cachedOutboundPosition = 0L; // cachedValue = min gating sequence in Disruptor
 
     private long tailStrike = 0L;
 
-//     to avoid braking
-//     number of bytes  - for current loop
-//    @Contended
-//    private int messageExtension = 0;
-
-
-    public static Revelator create(final int size,
-                                   final StageHandler handler,
+    public static Revelator create(final int bufferSize,
+                                   final IFlowProcessorsFactory flowProcessorsFactory,
                                    final ThreadFactory threadFactory) {
 
-
-        final long bufferAddr = UNSAFE.allocateMemory(size);
-
-        log.info("bufferAddr={}", String.format("%X", bufferAddr));
-
-//        final long l = Unsafe.getUnsafe().allocateMemory(32);
+        if (!BitUtil.isPowerOfTwo(bufferSize)) {
+            throw new IllegalArgumentException("Revelator buffer size must be 2^N");
+        }
 
 
-        return new Revelator(size, bufferAddr, handler, threadFactory);
+        final SingleFence inboundFence = new SingleFence(); // single publisher
 
+        final int indexMask = bufferSize - 1;
+
+        final long bufferAddr = UNSAFE.allocateMemory(bufferSize);
+
+        log.debug("bufferAddr={}", String.format("%X", bufferAddr));
+
+        final IFlowProcessorsFactory.ProcessorsChain chain = flowProcessorsFactory.createProcessors(
+                inboundFence,
+                new RevelatorConfig(indexMask, bufferSize, bufferAddr));
+
+
+        return new Revelator(
+                bufferSize,
+                indexMask,
+                bufferAddr,
+                chain.getProcessors(),
+                threadFactory,
+                inboundFence,
+                chain.getReleasingFence());
     }
 
 
     private Revelator(final int bufferSize,
+                      final int indexMask,
                       final long bufferAddr,
-                      final StageHandler handler,
-                      final ThreadFactory threadFactory) {
+                      final List<? extends IFlowProcessor> processors,
+                      final ThreadFactory threadFactory,
+                      final SingleFence inboundFence,
+                      final IFence outboundFence) {
 
         this.bufferSize = bufferSize;
+        this.indexMask = indexMask;
         this.bufferAddr = bufferAddr;
-        this.indexMask = bufferSize - 1;
-        this.handler = handler;
+        this.processors = processors;
         this.threadFactory = threadFactory;
+        this.inboundFence = inboundFence;
+        this.releasingFence = outboundFence;
     }
 
     public void start() {
 
-        final BatchFlowHandler batchFlowHandler = new BatchFlowHandler(
-                this,
-                handler,
-                headFence,
-                tailFence,
-                indexMask,
-                bufferSize,
-                bufferAddr);
+        int c = 0;
 
-        Thread thread = threadFactory.newThread(batchFlowHandler);
-        log.info("Starting handler...");
-        thread.setName("HANDLER");
-        thread.setDaemon(true);
-        thread.start();
+        for (IFlowProcessor processor : processors) {
+
+            final Thread thread = threadFactory.newThread(processor);
+            final String threadName = "PROC-" + c;
+            log.info("Starting processor {} (thread {})...", processor, threadName);
+            thread.setName(threadName);
+            thread.setDaemon(true);
+            thread.start();
+            c++;
+        }
     }
 
 
@@ -143,17 +163,9 @@ public final class Revelator implements AutoCloseable {
 
             // write 0 message, indicating that reader should start from buffer
             // there is always at least 8 bytes available due to alignment (only need to check wrap point before writing)
-            // so we check wrap point for extension and claimed message both (just to do it once)
+            // so we check wrap point for claimed message (just to do it once)
             wrapPointCheckWaitUpdate(msgStartSequence, wrapPoint + remainingSpaceBytes);
             writeLongDataUnsafe(index, 0L);
-
-            // always use 24 byte message
-//            final long sizeEncoded = 7L << 61;
-//            final long blankMsgSizeBytes = bufferSize - (msgStartSequence & indexMask) - 24;
-//            final long blankMsgSizeLongs = blankMsgSizeBytes >> 3;
-//
-//            writeLongData(msgStartSequence + 8, sizeEncoded | correlationId);
-//            writeLongData(msgStartSequence + 16, blankMsgSizeLongs);
 
             index = 0;
             msgStartSequence += remainingSpaceBytes;
@@ -166,17 +178,9 @@ public final class Revelator implements AutoCloseable {
             wrapPointCheckWaitUpdate(msgStartSequence, wrapPoint);
         }
 
-//        if (extension >= 0) {
-//            // safe to do it because all consumers are processing between 'cachedTailPosition' and 'nextSequence'
-//            // messageExtension will be read only after headFence is updated by following publish operation
-//            // messageExtension will not be read after last handler updated tailFence
-//            messageExtension = extension;
-//        }
-
 //        log.debug("WRITING HEADER correlationId={}", correlationId);
 
         // write header
-
 
         final long msgTypeEncoded = ((long) messageType) << 56;
 
@@ -205,15 +209,15 @@ public final class Revelator implements AutoCloseable {
         cachedTailPosition > publishedPosition --- "Handle the extraordinary case of a gating sequence being larger than the cursor more gracefully"
          */
 
-        if (wrapPoint > cachedTailPosition) {
+        if (wrapPoint > cachedOutboundPosition) {
 
             // let processors progress (todo can try do once only if discovered tailFence sill not behind wrap point?)
 //            log.debug("setVolatile msgStartSequence={}",msgStartSequence);
-            headFence.setVolatile(msgStartSequence);  // StoreLoad fence
+            inboundFence.setVolatile(msgStartSequence);  // StoreLoad fence
 
 //            log.debug(" tailFence.getVolatile()={}",tailFence.getVolatile());
             long minSequence;
-            while (wrapPoint > (minSequence = Math.min(tailFence.getVolatile(), msgStartSequence))) {
+            while (wrapPoint > (minSequence = Math.min(releasingFence.getVolatile(cachedOutboundPosition), msgStartSequence))) {
                 LockSupport.parkNanos(1L); // TODO: Use waitStrategy to spin? (can cause starvation)
 //                Thread.onSpinWait();
 //                Thread.yield();
@@ -221,7 +225,7 @@ public final class Revelator implements AutoCloseable {
                 tailStrike++;
             }
 
-            cachedTailPosition = minSequence;
+            cachedOutboundPosition = minSequence;
         }
     }
 
@@ -240,13 +244,10 @@ public final class Revelator implements AutoCloseable {
 
     public void publish(long positionPlusSize) {
 //        log.debug("PUBLISH positionPlusSize={}", positionPlusSize);
-        headFence.lazySet(positionPlusSize);
+        inboundFence.lazySet(positionPlusSize);
         // todo waitStrategy.signalAllWhenBlocking();
     }
 
-//    int getMessageExtension() {
-//        return messageExtension;
-//    }
 
     public int getBufferSize() {
         return bufferSize;

@@ -1,5 +1,7 @@
 package exchange.core2.revelator;
 
+import exchange.core2.revelator.processors.ProcessorsFactories;
+import exchange.core2.revelator.utils.AffinityThreadFactory;
 import net.openhft.affinity.AffinityLock;
 import org.HdrHistogram.Histogram;
 import org.HdrHistogram.SingleWriterRecorder;
@@ -12,7 +14,7 @@ import java.util.concurrent.CountDownLatch;
 
 public final class RevelatorTester {
 
-    private static final Logger log = LoggerFactory.getLogger(Revelator.class);
+    private static final Logger log = LoggerFactory.getLogger(RevelatorTester.class);
 
     public static void main(String[] args) throws InterruptedException {
 
@@ -26,7 +28,10 @@ public final class RevelatorTester {
             final AffinityThreadFactory atf = new AffinityThreadFactory(
                     AffinityThreadFactory.ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_PHYSICAL_CORE);
 
-            final Revelator r = Revelator.create(bufferSizeTest, RevelatorTester::handleMessage, atf);
+            final Revelator r = Revelator.create(
+                    bufferSizeTest,
+                    ProcessorsFactories.single(RevelatorTester::handleMessage),
+                    atf);
 
             r.start();
 
@@ -103,12 +108,11 @@ public final class RevelatorTester {
 
 //                log.debug("FINAL PUBLISH DONE");
 
-                final long processingTimeMs = System.currentTimeMillis() - startTimeMs;
                 final float processingTimeUs = (System.nanoTime() - startTimeNs) / 1000f;
                 final float perfMt = (float) iterationsPerTestCycle / processingTimeUs;
                 final float targetMt = (float) tps / 1_000_000.0f;
-                String tag = String.format("%.3f (%.2fns) real:%.3f MT/s %.0f%%",
-                        targetMt, picosPerCmd / 1024.0, perfMt, perfMt / targetMt * 100.0);
+                final String tag = String.format("%.2fns %.3f -> %.3f MT/s %.0f%%",
+                        picosPerCmd / 1024.0, targetMt, perfMt, perfMt / targetMt * 100.0);
 
                 latch.await();
 

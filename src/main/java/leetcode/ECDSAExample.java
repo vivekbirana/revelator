@@ -1,6 +1,7 @@
 package leetcode;
 
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.security.spec.ECGenParameterSpec;
 
@@ -18,32 +19,24 @@ public class ECDSAExample {
          * Generate a key pair
          */
 
-        KeyPairGenerator keyGen = KeyPairGenerator.getInstance("EC");
+        final KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("EC");
 
-        keyGen.initialize(new ECGenParameterSpec("secp256r1"), new SecureRandom());
+        keyPairGenerator.initialize(new ECGenParameterSpec("secp256r1"), new SecureRandom());
 
-        KeyPair pair = keyGen.generateKeyPair();
-        PrivateKey priv = pair.getPrivate();
-        PublicKey pub = pair.getPublic();
+        final KeyPair keyPair = keyPairGenerator.generateKeyPair();
+        final PrivateKey privateKey = keyPair.getPrivate();
+        final PublicKey publicKey = keyPair.getPublic();
 
-        /*
-         * Create a Signature object and initialize it with the private key
-         */
 
-        Signature ecdsa = Signature.getInstance("SHA256withECDSA");
+        final Signature signature = Signature.getInstance("SHA256withECDSA");
 
-        ecdsa.initSign(priv);
+        signature.initSign(privateKey);
 
-        String str = "This is string to sign";
-        byte[] strByte = str.getBytes("UTF-8");
-        ecdsa.update(strByte);
+        final String str = "This is string to sign";
+        byte[] strByte = str.getBytes(StandardCharsets.UTF_8);
+        signature.update(strByte);
 
-        /*
-         * Now that all the data to be signed has been read in, generate a
-         * signature for it
-         */
-
-        byte[] realSig = ecdsa.sign();
+        byte[] realSig = signature.sign();
         System.out.println("Signature: " + new BigInteger(1, realSig).toString(16));
 
     }

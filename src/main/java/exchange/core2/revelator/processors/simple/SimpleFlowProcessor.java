@@ -1,17 +1,21 @@
-package exchange.core2.revelator;
+package exchange.core2.revelator.processors.simple;
 
+import exchange.core2.revelator.RevelatorConfig;
+import exchange.core2.revelator.processors.IFlowProcessor;
+import exchange.core2.revelator.Revelator;
+import exchange.core2.revelator.fences.IFence;
+import exchange.core2.revelator.fences.SingleFence;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public final class BatchFlowHandler implements Runnable {
+public final class SimpleFlowProcessor implements IFlowProcessor {
 
-    private static final Logger log = LoggerFactory.getLogger(BatchFlowHandler.class);
+    private static final Logger log = LoggerFactory.getLogger(SimpleFlowProcessor.class);
 
-    private final Revelator revelator;
-    private final StageHandler handler;
+    private final SimpleMessageHandler handler;
 
-    private final Fence headFence;
-    private final Fence tailFence;
+    private final IFence inboundFence;
+    private final SingleFence releasingFence;
 
     private final int indexMask;
     private final long bufferAddr;
@@ -19,21 +23,17 @@ public final class BatchFlowHandler implements Runnable {
 
     private long superCounter;
 
-    public BatchFlowHandler(Revelator revelator,
-                            StageHandler handler,
-                            Fence headFence,
-                            Fence tailFence,
-                            int indexMask,
-                            int bufferSize,
-                            long bufferAddr) {
+    public SimpleFlowProcessor(final SimpleMessageHandler handler,
+                               final IFence inboundFence,
+                               final SingleFence releasingFence,
+                               final RevelatorConfig config) {
 
-        this.revelator = revelator;
         this.handler = handler;
-        this.headFence = headFence;
-        this.tailFence = tailFence;
-        this.indexMask = indexMask;
-        this.bufferAddr = bufferAddr;
-        this.bufferSize = bufferSize;
+        this.inboundFence = inboundFence;
+        this.releasingFence = releasingFence;
+        this.indexMask = config.getIndexMask();
+        this.bufferAddr = config.getBufferAddr();
+        this.bufferSize = config.getBufferSize();
     }
 
     @Override
@@ -45,7 +45,7 @@ public final class BatchFlowHandler implements Runnable {
 
             long availableSeq;
             int c = 0;
-            while ((availableSeq = headFence.getVolatile()) <= positionSeq) {
+            while ((availableSeq = inboundFence.getVolatile(positionSeq)) <= positionSeq) {
                 Thread.onSpinWait();
 //                LockSupport.parkNanos(1L);
 //                    if (c++ == 100) {
@@ -123,9 +123,12 @@ public final class BatchFlowHandler implements Runnable {
                 positionSeq += Revelator.MSG_HEADER_SIZE + payloadSize;
             }
 
-            tailFence.lazySet(availableSeq);
+            releasingFence.lazySet(availableSeq);
         }
 
     }
 
+    public SingleFence getReleasingFence() {
+        return releasingFence;
+    }
 }

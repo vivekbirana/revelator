@@ -1,5 +1,10 @@
-package exchange.core2.revelator;
+package exchange.core2.revelator.processors.pipelined;
 
+
+import exchange.core2.revelator.Revelator;
+import exchange.core2.revelator.fences.IFence;
+import exchange.core2.revelator.fences.SingleFence;
+import exchange.core2.revelator.processors.IFlowProcessor;
 
 import java.util.Arrays;
 import java.util.function.Supplier;
@@ -19,17 +24,17 @@ import java.util.stream.IntStream;
  *
  *
  */
-public class RevelatorPipeline<S extends PipelineSession> implements Runnable {
+public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements IFlowProcessor {
 
     private static final long WORK_TRIGGER_MAX_VALUE = Long.MAX_VALUE >> 1;
 
     private final int numHandlers;
-    private final RevelatorStageHandler<S>[] handlers;
+    private final PipelinedStageHandler<S>[] handlers;
     private final int PIPELINE_SIZE = 8; // should be be 2^N
     private final S[] sessions;
 
-    private final Fence incomingFence;
-    private final Fence outgoingFence;
+    private final IFence inboundFence;
+    private final SingleFence releasingFence;
 
 
     private final int indexMask;
@@ -40,19 +45,19 @@ public class RevelatorPipeline<S extends PipelineSession> implements Runnable {
 //    private final int missWeights[];
 
 
-    public RevelatorPipeline(final RevelatorStageHandler<S>[] handlers,
-                             final Supplier<S> sessionsFactory,
-                             final Fence incomingFence,
-                             final Fence outgoingFence,
-                             int indexMask,
-                             long bufferAddr) {
+    public PipelinedFlowProcessor(final PipelinedStageHandler<S>[] handlers,
+                                  final Supplier<S> sessionsFactory,
+                                  final SingleFence inboundFence,
+                                  final SingleFence releasingFence,
+                                  int indexMask,
+                                  long bufferAddr) {
 
         this.handlers = handlers;
         this.numHandlers = handlers.length;
         this.sessions = createSessions(sessionsFactory, PIPELINE_SIZE);
-        this.workWeights = Arrays.stream(handlers).mapToInt(RevelatorStageHandler::getHitWorkWeight).toArray();
-        this.incomingFence = incomingFence;
-        this.outgoingFence = outgoingFence;
+        this.workWeights = Arrays.stream(handlers).mapToInt(PipelinedStageHandler::getHitWorkWeight).toArray();
+        this.inboundFence = inboundFence;
+        this.releasingFence = releasingFence;
         this.indexMask = indexMask;
         this.bufferAddr = bufferAddr;
     }
@@ -61,7 +66,7 @@ public class RevelatorPipeline<S extends PipelineSession> implements Runnable {
     private static <S> S[] createSessions(Supplier<S> sessionsFactory, final int size) {
         return (S[]) IntStream.range(0, size)
                 .mapToObj(i -> sessionsFactory.get())
-                .toArray(x -> new PipelineSession[size]);
+                .toArray(x -> new PipelinedFlowSession[size]);
     }
 
 
@@ -105,7 +110,7 @@ public class RevelatorPipeline<S extends PipelineSession> implements Runnable {
                 // otherwise spin on fence volatile read
                 //do {
                 //  workCounter++;
-                availableOffset = incomingFence.getVolatile();
+                availableOffset = inboundFence.getVolatile(availableOffset);
                 //Thread.onSpinWait();
                 //} while (availableOffset <= initializerOffset);
 
@@ -179,7 +184,7 @@ public class RevelatorPipeline<S extends PipelineSession> implements Runnable {
                             // every time last handler makes progress - update outgoingFence
                             // TODO check if it slows down compared to publishing once-by-batch in disruptor
                             if (handlerIdx == numHandlers - 1) {
-                                outgoingFence.lazySet(session.globalOffset);
+                                releasingFence.lazySet(session.globalOffset);
                             }
 
                         } else {
@@ -210,6 +215,11 @@ public class RevelatorPipeline<S extends PipelineSession> implements Runnable {
         }
 
 
+    }
+
+    @Override
+    public SingleFence getReleasingFence() {
+        return releasingFence;
     }
 
 
