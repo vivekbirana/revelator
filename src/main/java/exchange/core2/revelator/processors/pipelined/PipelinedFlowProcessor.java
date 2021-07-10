@@ -3,7 +3,7 @@ package exchange.core2.revelator.processors.pipelined;
 
 import exchange.core2.revelator.Revelator;
 import exchange.core2.revelator.fences.IFence;
-import exchange.core2.revelator.fences.SingleFence;
+import exchange.core2.revelator.fences.SingleWriterFence;
 import exchange.core2.revelator.processors.IFlowProcessor;
 
 import java.util.Arrays;
@@ -34,7 +34,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
     private final S[] sessions;
 
     private final IFence inboundFence;
-    private final SingleFence releasingFence;
+    private final SingleWriterFence releasingFence;
 
 
     private final int indexMask;
@@ -47,8 +47,8 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
     public PipelinedFlowProcessor(final PipelinedStageHandler<S>[] handlers,
                                   final Supplier<S> sessionsFactory,
-                                  final SingleFence inboundFence,
-                                  final SingleFence releasingFence,
+                                  final SingleWriterFence inboundFence,
+                                  final SingleWriterFence releasingFence,
                                   int indexMask,
                                   long bufferAddr) {
 
@@ -218,7 +218,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
     }
 
     @Override
-    public SingleFence getReleasingFence() {
+    public SingleWriterFence getReleasingFence() {
         return releasingFence;
     }
 

@@ -1,7 +1,7 @@
 package exchange.core2.revelator.processors;
 
 import exchange.core2.revelator.fences.IFence;
-import exchange.core2.revelator.fences.SingleFence;
+import exchange.core2.revelator.fences.SingleWriterFence;
 import exchange.core2.revelator.processors.simple.SimpleMessageHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,7 +13,7 @@ public final class GenericMultiProcessor implements Runnable {
     private final SimpleMessageHandler handler;
 
     private final IFence inboundFence;
-    private final SingleFence releasingFence;
+    private final SingleWriterFence releasingFence;
 
     private final int indexMask;
     private final int bufferSize;
@@ -22,7 +22,7 @@ public final class GenericMultiProcessor implements Runnable {
 
     public GenericMultiProcessor(SimpleMessageHandler handler,
                                  IFence inboundFence,
-                                 SingleFence releasingFence,
+                                 SingleWriterFence releasingFence,
                                  int indexMask,
                                  int bufferSize,
                                  long bufferAddr) {

@@ -1,10 +1,10 @@
 package exchange.core2.revelator.processors.simple;
 
-import exchange.core2.revelator.RevelatorConfig;
-import exchange.core2.revelator.processors.IFlowProcessor;
 import exchange.core2.revelator.Revelator;
+import exchange.core2.revelator.RevelatorConfig;
 import exchange.core2.revelator.fences.IFence;
-import exchange.core2.revelator.fences.SingleFence;
+import exchange.core2.revelator.fences.SingleWriterFence;
+import exchange.core2.revelator.processors.IFlowProcessor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,7 +15,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
     private final SimpleMessageHandler handler;
 
     private final IFence inboundFence;
-    private final SingleFence releasingFence;
+    private final SingleWriterFence releasingFence;
 
     private final int indexMask;
     private final long bufferAddr;
@@ -25,7 +25,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 
     public SimpleFlowProcessor(final SimpleMessageHandler handler,
                                final IFence inboundFence,
-                               final SingleFence releasingFence,
+                               final SingleWriterFence releasingFence,
                                final RevelatorConfig config) {
 
         this.handler = handler;
@@ -86,41 +86,50 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 //            log.debug("{}", String.format("correlationId=%X = %d", correlationId, correlationId));
 //            log.debug("{}", String.format("header2=%X", header2));
 
-                final byte msgType = (byte) (header2 & 0x7);
+                final byte msgType = (byte) (header2 & 0x1F);
+
+                if (msgType == Revelator.MSG_TYPE_POISON_PILL) {
+
+                    log.debug("processor shutdown (received msgType={}, publishing positionSeq={})", msgType, positionSeq);
+                    releasingFence.lazySet(positionSeq);
+                    return;
+
+                } else {
 
 //            log.debug("{}", String.format("msgSizeLongsCompact=%X", msgSizeLongsCompact));
 //            log.debug("{}", String.format("msgType=%X", msgType));
 
-                final long timestamp = Revelator.UNSAFE.getLong(headerStartAddress + 8);
+                    final long timestamp = Revelator.UNSAFE.getLong(headerStartAddress + 8);
 
-                final int payloadSize = (int) Revelator.UNSAFE.getLong(headerStartAddress + 16) << 3;
+                    final int payloadSize = (int) Revelator.UNSAFE.getLong(headerStartAddress + 16) << 3;
 //                log.debug("custom payloadSize={}", payloadSize);
 
-                final long messageStartAddress = headerStartAddress + Revelator.MSG_HEADER_SIZE;
-                if (messageStartAddress + payloadSize > bufferAddr + bufferSize) {
-                    throw new IllegalStateException("Failed to decode message: headerSize=" + Revelator.MSG_HEADER_SIZE
-                            + " payloadSize=" + payloadSize
-                            + " correlationId=" + correlationId
-                            + " bufferAddr=" + bufferAddr
-                            + " unexpected " + (messageStartAddress + payloadSize - bufferAddr - bufferSize) + " bytes");
-                }
+                    final long messageStartAddress = headerStartAddress + Revelator.MSG_HEADER_SIZE;
+                    if (messageStartAddress + payloadSize > bufferAddr + bufferSize) {
+                        throw new IllegalStateException("Failed to decode message: headerSize=" + Revelator.MSG_HEADER_SIZE
+                                + " payloadSize=" + payloadSize
+                                + " correlationId=" + correlationId
+                                + " bufferAddr=" + bufferAddr
+                                + " unexpected " + (messageStartAddress + payloadSize - bufferAddr - bufferSize) + " bytes");
+                    }
 
 
-                try {
+                    try {
 //                log.debug("Handle message messageStartAddress={} -> offsetInBuf={} payloadSize={}",
 //                        messageStartAddress, headerStartAddress - bufferAddr, payloadSize);
 
 //                Thread.sleep(1);
-                    handler.handle(messageStartAddress, payloadSize, timestamp, correlationId, msgType);
+                        handler.handle(messageStartAddress, payloadSize, timestamp, correlationId, msgType);
 //                log.debug("DONE");
-                } catch (final Exception ex) {
-                    log.debug("Exception when processing batch", ex);
-                    // TODO call custom handler
-                }
+                    } catch (final Exception ex) {
+                        log.debug("Exception when processing batch", ex);
+                        // TODO call custom handler
+                    }
 
 //            log.debug("positionSeq: {}->{} ", positionSeq, positionSeq + headerSize + payloadSize );
 
-                positionSeq += Revelator.MSG_HEADER_SIZE + payloadSize;
+                    positionSeq += Revelator.MSG_HEADER_SIZE + payloadSize;
+                }
             }
 
             releasingFence.lazySet(availableSeq);
@@ -128,7 +137,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 
     }
 
-    public SingleFence getReleasingFence() {
+    public SingleWriterFence getReleasingFence() {
         return releasingFence;
     }
 }

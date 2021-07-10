@@ -45,9 +45,9 @@
 
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <java.version>15</java.version>
-        <maven.compiler.target>15</maven.compiler.target>
-        <maven.compiler.source>15</maven.compiler.source>
+        <java.version>16</java.version>
+        <maven.compiler.target>16</maven.compiler.target>
+        <maven.compiler.source>16</maven.compiler.source>
 
         <guava.version>28.2-jre</guava.version>
         <commons-math3.version>3.6.1</commons-math3.version>
@@ -69,6 +69,12 @@
 
     <dependencyManagement>
         <dependencies>
+
+            <dependency>
+                <groupId>exchange.core2</groupId>
+                <artifactId>test-generator</artifactId>
+                <version>0.7.9-SNAPSHOT</version>
+            </dependency>
 
             <!-- Real Logic Agrona -->
             <dependency>
@@ -119,7 +125,6 @@
                 <groupId>com.google.guava</groupId>
                 <artifactId>guava</artifactId>
                 <version>${guava.version}</version>
-                <scope>test</scope>
             </dependency>
 
             <!-- Apache Commons -->
@@ -127,13 +132,11 @@
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-lang3</artifactId>
                 <version>${commons-lang3.version}</version>
-                <scope>test</scope>
             </dependency>
             <dependency>
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-math3</artifactId>
                 <version>${commons-math3.version}</version>
-                <scope>test</scope>
             </dependency>
 
             <!-- FastUtil -->
@@ -207,10 +210,15 @@
     <dependencies>
 
 
-<!--        <dependency>
-            <groupId>net.openhft</groupId>
-            <artifactId>chronicle-wire</artifactId>
-        </dependency>-->
+        <dependency>
+            <groupId>exchange.core2</groupId>
+            <artifactId>test-generator</artifactId>
+        </dependency>
+
+        <!--        <dependency>
+                    <groupId>net.openhft</groupId>
+                    <artifactId>chronicle-wire</artifactId>
+                </dependency>-->
 
         <dependency>
             <groupId>org.agrona</groupId>
@@ -250,18 +258,15 @@
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
-            <scope>test</scope>
         </dependency>
 
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
-            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-math3</artifactId>
-            <scope>test</scope>
         </dependency>
 
         <dependency>
@@ -291,6 +296,21 @@
             </activation>
             <build>
                 <plugins>
+
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-compiler-plugin</artifactId>
+                        <version>3.8.1</version>
+                        <configuration>
+                            <release>16</release>
+                            <compilerArgs>
+                                <arg>--add-exports=jdk.base/jdk.internal.vm.annotation=ALL-UNNAMED</arg>
+                                <arg>--add-exports=java.base/jdk.internal.vm.annotation=ALL-UNNAMED</arg>
+                            </compilerArgs>
+                            <fork>true</fork>
+                        </configuration>
+                    </plugin>
+
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-surefire-plugin</artifactId>

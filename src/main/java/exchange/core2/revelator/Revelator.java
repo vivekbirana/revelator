@@ -1,7 +1,7 @@
 package exchange.core2.revelator;
 
 import exchange.core2.revelator.fences.IFence;
-import exchange.core2.revelator.fences.SingleFence;
+import exchange.core2.revelator.fences.SingleWriterFence;
 import exchange.core2.revelator.processors.IFlowProcessorsFactory;
 import exchange.core2.revelator.processors.IFlowProcessor;
 import org.agrona.BitUtil;
@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.locks.LockSupport;
@@ -19,6 +20,7 @@ public final class Revelator implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(Revelator.class);
 
     public static final int MSG_HEADER_SIZE = 24;
+    public static final byte MSG_TYPE_POISON_PILL = 31;
 
     public static final Unsafe UNSAFE;
 
@@ -40,9 +42,11 @@ public final class Revelator implements AutoCloseable {
 
     private final ThreadFactory threadFactory;
 
-    private final SingleFence inboundFence; // single publisher
+    private final SingleWriterFence inboundFence; // single publisher
 
     private final IFence releasingFence;
+
+    private final List<Thread> threads = new ArrayList<>();
 
     private long reservedPosition = 0L; // nextValue = single writer sequencer position in Disruptor
 
@@ -59,7 +63,7 @@ public final class Revelator implements AutoCloseable {
         }
 
 
-        final SingleFence inboundFence = new SingleFence(); // single publisher
+        final SingleWriterFence inboundFence = new SingleWriterFence(); // single publisher
 
         final int indexMask = bufferSize - 1;
 
@@ -88,7 +92,7 @@ public final class Revelator implements AutoCloseable {
                       final long bufferAddr,
                       final List<? extends IFlowProcessor> processors,
                       final ThreadFactory threadFactory,
-                      final SingleFence inboundFence,
+                      final SingleWriterFence inboundFence,
                       final IFence outboundFence) {
 
         this.bufferSize = bufferSize;
@@ -100,11 +104,15 @@ public final class Revelator implements AutoCloseable {
         this.releasingFence = outboundFence;
     }
 
-    public void start() {
+    public synchronized void start() {
+
+        if (!threads.isEmpty()) {
+            throw new IllegalStateException("already started");
+        }
 
         int c = 0;
 
-        for (IFlowProcessor processor : processors) {
+        for (final IFlowProcessor processor : processors) {
 
             final Thread thread = threadFactory.newThread(processor);
             final String threadName = "PROC-" + c;
@@ -112,10 +120,20 @@ public final class Revelator implements AutoCloseable {
             thread.setName(threadName);
             thread.setDaemon(true);
             thread.start();
+            threads.add(thread);
             c++;
         }
     }
 
+
+    public synchronized void stop() throws InterruptedException {
+        final long position = claimSingleMessage(0, 0L, 0L, MSG_TYPE_POISON_PILL);
+        publish(position);
+
+        for (final Thread thread : threads) {
+            thread.join();
+        }
+    }
 
     /**
      * Claim space for single message
@@ -128,8 +146,8 @@ public final class Revelator implements AutoCloseable {
                                    final long correlationId,
                                    final byte messageType) {
 
-        if (messageType < 1 || messageType > 31) {
-            throw new IllegalArgumentException("message type should be in range: 1..31");
+        if (messageType < 1 || messageType >= MSG_TYPE_POISON_PILL) {
+            throw new IllegalArgumentException("message type should be in range: 1..30");
         }
 
         if ((correlationId >> 56) != 0) {

@@ -3,10 +3,13 @@ package exchange.core2.revelator;
 public class RevelatorConfig {
 
     private final int indexMask;
-    private final  int bufferSize;
+    private final int bufferSize;
     private final long bufferAddr;
 
-    public RevelatorConfig(int indexMask, int bufferSize, long bufferAddr) {
+    public RevelatorConfig(final int indexMask,
+                           final int bufferSize,
+                           final long bufferAddr) {
+
         this.indexMask = indexMask;
         this.bufferSize = bufferSize;
         this.bufferAddr = bufferAddr;

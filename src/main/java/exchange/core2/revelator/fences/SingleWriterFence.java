@@ -5,9 +5,9 @@ import jdk.internal.vm.annotation.Contended;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public final class SingleFence implements IFence {
+public final class SingleWriterFence implements IFence {
 
-    private final static Logger logger = LoggerFactory.getLogger(SingleFence.class);
+    private final static Logger logger = LoggerFactory.getLogger(SingleWriterFence.class);
 
     @Contended
     protected volatile long value = -1;
@@ -19,7 +19,7 @@ public final class SingleFence implements IFence {
     // todo from disruptor
     static {
         try {
-            VALUE_OFFSET = Revelator.UNSAFE.objectFieldOffset(SingleFence.class.getDeclaredField("value"));
+            VALUE_OFFSET = Revelator.UNSAFE.objectFieldOffset(SingleWriterFence.class.getDeclaredField("value"));
             logger.debug("VALUE_OFFSET={}", VALUE_OFFSET);
         } catch (final Exception e) {
             throw new RuntimeException(e);

@@ -2,7 +2,7 @@ package exchange.core2.revelator.processors;
 
 import exchange.core2.revelator.fences.AggregatingMinFence;
 import exchange.core2.revelator.fences.IFence;
-import exchange.core2.revelator.fences.SingleFence;
+import exchange.core2.revelator.fences.SingleWriterFence;
 import exchange.core2.revelator.processors.simple.SimpleFlowProcessor;
 import exchange.core2.revelator.processors.simple.SimpleMessageHandler;
 
@@ -19,7 +19,7 @@ public class ProcessorsFactories {
             final SimpleFlowProcessor simpleFlowProcessor = new SimpleFlowProcessor(
                     handler,
                     inboundFence,
-                    new SingleFence(),
+                    new SingleWriterFence(),
                     config);
 
             return new IFlowProcessorsFactory.ProcessorsChain(
@@ -37,7 +37,7 @@ public class ProcessorsFactories {
                     .map(handler -> new SimpleFlowProcessor(
                             handler,
                             inboundFence,
-                            new SingleFence(),
+                            new SingleWriterFence(),
                             config))
                     .collect(Collectors.toList());
 
@@ -64,7 +64,7 @@ public class ProcessorsFactories {
                 final SimpleFlowProcessor processor = new SimpleFlowProcessor(
                         handler,
                         lastFence,
-                        new SingleFence(),
+                        new SingleWriterFence(),
                         config);
 
                 processors.add(processor);
