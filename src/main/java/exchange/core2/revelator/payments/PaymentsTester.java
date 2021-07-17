@@ -58,11 +58,37 @@ public final class PaymentsTester {
         log.info("Generated {} maxBalances", maxBalances.size());
 
 
-        final PaymentsCore paymentsCore = PaymentsCore.create();
+        log.info("Creating payments core ...");
+        ResponseHandler responseHandler = new ResponseHandler();
 
+        final PaymentsCore paymentsCore = PaymentsCore.create(responseHandler);
 
+        log.info("Starting payments core ...");
+        paymentsCore.start();
 
+        final PaymentsApi paymentsApi = paymentsCore.getPaymentsApi();
 
+        final MutableInt correlationId = new MutableInt();
+
+        log.info("Updating balances for {} accounts ...", maxBalances.size());
+
+        maxBalances.forEachKeyValue((account, amount) ->
+                paymentsApi.adjustBalance(System.nanoTime(), correlationId.getAndIncrement(), account, amount));
+
+        log.info("Done");
+
+        log.info("Performing {} transfers ...", transfers.size());
+
+        transfers.forEach(order ->
+                paymentsApi.transfer(
+                        System.nanoTime(),
+                        correlationId.getAndIncrement(),
+                        order.sourceAccount,
+                        order.destinationAccount,
+                        order.amount,
+                        order.currency));
+
+        log.info("Done");
 
     }
 
@@ -120,6 +146,19 @@ public final class PaymentsTester {
         return treasureBalances;
     }
 
+
+   private static class ResponseHandler implements IPaymentsResponseHandler {
+
+        @Override
+        public void commandResult(long timestamp, long correlationId, int resultCode, IRequestAccessor accessor) {
+            log.debug("commandResult: {}->{}", correlationId, resultCode);
+        }
+
+        @Override
+        public void balanceUpdateEvent(long account, long diff, long newBalance) {
+            log.debug("balanceUpdateEvent: {}->{}", account, newBalance);
+        }
+    }
 
     record TransferTestOrder(
             long sourceAccount,

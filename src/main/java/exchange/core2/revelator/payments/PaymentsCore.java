@@ -1,9 +1,12 @@
 package exchange.core2.revelator.payments;
 
 import exchange.core2.revelator.Revelator;
+import exchange.core2.revelator.buffers.LocalResultsByteBuffer;
 import exchange.core2.revelator.processors.IFlowProcessorsFactory;
 import exchange.core2.revelator.processors.ProcessorsFactories;
 import exchange.core2.revelator.utils.AffinityThreadFactory;
+
+import java.util.List;
 
 public final class PaymentsCore {
 
@@ -16,11 +19,19 @@ public final class PaymentsCore {
     private final PaymentsApi paymentsApi;
 
 
-    public static PaymentsCore create() {
-        final AccountsProcessor accountsProcessor = new AccountsProcessor();
-        final PaymentsHandler paymentsHandler = new PaymentsHandler(accountsProcessor);
+    public static PaymentsCore create(IPaymentsResponseHandler responseHandler) {
 
-        final IFlowProcessorsFactory processorsFactory = ProcessorsFactories.single(paymentsHandler::handleMessage);
+        final LocalResultsByteBuffer resultsBuffer = LocalResultsByteBuffer.create(BUFFER_SIZE);
+
+        final AccountsProcessor accountsProcessor = new AccountsProcessor();
+
+        final PaymentsHandler paymentsHandler = new PaymentsHandler(accountsProcessor, resultsBuffer);
+
+        final ResponsesAggregator responsesAggregator = new ResponsesAggregator(resultsBuffer, responseHandler);
+
+        final IFlowProcessorsFactory processorsFactory = ProcessorsFactories.chain(List.of(
+                paymentsHandler::handleMessage,
+                responsesAggregator::handleMessage));
 
         final AffinityThreadFactory atf = new AffinityThreadFactory(
                 AffinityThreadFactory.ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_PHYSICAL_CORE);
@@ -56,5 +67,7 @@ public final class PaymentsCore {
         }
     }
 
-
+    public PaymentsApi getPaymentsApi() {
+        return paymentsApi;
+    }
 }

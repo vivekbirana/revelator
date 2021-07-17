@@ -2,8 +2,8 @@ package exchange.core2.revelator;
 
 import exchange.core2.revelator.fences.IFence;
 import exchange.core2.revelator.fences.SingleWriterFence;
-import exchange.core2.revelator.processors.IFlowProcessorsFactory;
 import exchange.core2.revelator.processors.IFlowProcessor;
+import exchange.core2.revelator.processors.IFlowProcessorsFactory;
 import org.agrona.BitUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,6 +60,10 @@ public final class Revelator implements AutoCloseable {
 
         if (!BitUtil.isPowerOfTwo(bufferSize)) {
             throw new IllegalArgumentException("Revelator buffer size must be 2^N");
+        }
+
+        if (bufferSize < 1024) {
+            throw new IllegalArgumentException("Revelator buffer size must be > 1024 bytes");
         }
 
 
@@ -139,7 +143,7 @@ public final class Revelator implements AutoCloseable {
      * Claim space for single message
      *
      * @param claimingPayloadSize
-     * @return
+     * @return offset to write message body
      */
     public long claimSingleMessage(final int claimingPayloadSize,
                                    final long timestamp,

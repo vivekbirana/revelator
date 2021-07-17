@@ -52,7 +52,7 @@ public class ProcessorsFactories {
         };
     }
 
-    public static IFlowProcessorsFactory chain(final Collection<SimpleMessageHandler> handlers) {
+    public static IFlowProcessorsFactory chain(final List<SimpleMessageHandler> handlers) {
 
         return (inboundFence, config) -> {
 

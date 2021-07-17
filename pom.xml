@@ -49,17 +49,17 @@
         <maven.compiler.target>16</maven.compiler.target>
         <maven.compiler.source>16</maven.compiler.source>
 
-        <guava.version>28.2-jre</guava.version>
+        <guava.version>30.1.1-jre</guava.version>
         <commons-math3.version>3.6.1</commons-math3.version>
-        <commons-lang3.version>3.10</commons-lang3.version>
-        <eclipse.collections.version>10.2.0</eclipse.collections.version>
+        <commons-lang3.version>3.12.0</commons-lang3.version>
+        <eclipse.collections.version>10.4.0</eclipse.collections.version>
         <hdr.histogram.version>2.1.12</hdr.histogram.version>
-        <agrona.version>1.4.1</agrona.version>
-        <slf4j.version>1.7.30</slf4j.version>
+        <agrona.version>1.11.0</agrona.version>
+        <slf4j.version>1.7.31</slf4j.version>
         <logback.version>1.2.3</logback.version>
-        <jmh.version>1.23</jmh.version>
-        <junit.version>4.13</junit.version>
-        <mockito.version>3.3.3</mockito.version>
+        <jmh.version>1.32</jmh.version>
+        <junit.version>4.13.2</junit.version>
+        <mockito.version>3.11.2</mockito.version>
         <hamcrest.version>1.3</hamcrest.version>
 
         <openhft.affinity.version>3.20.0</openhft.affinity.version>

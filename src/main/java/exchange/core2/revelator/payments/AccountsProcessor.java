@@ -45,14 +45,19 @@ public final class AccountsProcessor {
         }
     }
 
-
     public boolean adjustBalance(final long account,
                                  final long amount) {
         try {
             final long available = balances.get(account);
-            final long newBalance = Math.subtractExact(available, amount);
+
+            final long newBalance = (amount >= 0)
+                    ? Math.subtractExact(available, amount)
+                    : Math.addExact(available, amount);
+
             balances.put(account, newBalance);
+
             return true;
+
         } catch (final ArithmeticException ex) {
 
             return false; // overflow
