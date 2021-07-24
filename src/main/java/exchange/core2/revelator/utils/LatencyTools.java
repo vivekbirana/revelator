@@ -1,4 +1,4 @@
-package exchange.core2.revelator;
+package exchange.core2.revelator.utils;
 
 import org.HdrHistogram.Histogram;
 

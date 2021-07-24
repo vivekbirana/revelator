@@ -4,15 +4,15 @@ public class RevelatorConfig {
 
     private final int indexMask;
     private final int bufferSize;
-    private final long bufferAddr;
+    private final long[] buffer;
 
     public RevelatorConfig(final int indexMask,
                            final int bufferSize,
-                           final long bufferAddr) {
+                           final long[] buffer) {
 
         this.indexMask = indexMask;
         this.bufferSize = bufferSize;
-        this.bufferAddr = bufferAddr;
+        this.buffer = buffer;
     }
 
     public int getIndexMask() {
@@ -23,7 +23,7 @@ public class RevelatorConfig {
         return bufferSize;
     }
 
-    public long getBufferAddr() {
-        return bufferAddr;
+    public long[] getBuffer() {
+        return buffer;
     }
 }

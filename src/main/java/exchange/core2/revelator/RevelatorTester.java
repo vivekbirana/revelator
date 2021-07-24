@@ -2,6 +2,7 @@ package exchange.core2.revelator;
 
 import exchange.core2.revelator.processors.ProcessorsFactories;
 import exchange.core2.revelator.utils.AffinityThreadFactory;
+import exchange.core2.revelator.utils.LatencyTools;
 import net.openhft.affinity.AffinityLock;
 import org.HdrHistogram.Histogram;
 import org.HdrHistogram.SingleWriterRecorder;
@@ -86,7 +87,7 @@ public final class RevelatorTester {
 //            log.debug("claimSeq={}", claimSeq);
                     long x = 0;
 
-                    for (int k = 0; k < testMsgSize; k += 8) {
+                    for (int k = 0; k < testMsgSize; k ++) {
 //                        log.debug("WRITE data[{}]: {}", k, i);
                         r.writeLongDataUnsafe(index + k, i);
                         x += i;
@@ -141,7 +142,8 @@ public final class RevelatorTester {
     }
 
 
-    private static void handleMessage(long addr,
+    private static void handleMessage(long[] buffer,
+                                      int index,
                                       int msgSize,
                                       long timestamp,
                                       long correlationId,
@@ -161,8 +163,8 @@ public final class RevelatorTester {
 //            log.debug("READ correlationId: {}", correlationId);
 
             long x = 0;
-            for (int k = 0; k < testMsgSize; k += 8) {
-                final long data = Revelator.UNSAFE.getLong(addr + k);
+            for (int k = 0; k < testMsgSize; k++) {
+                final long data = buffer[index + k];
                 x += data;
 //                log.debug("READ data[{}]: {}", k, data);
             }
@@ -183,11 +185,9 @@ public final class RevelatorTester {
     }
 
 
-    final static int testMsgSize = 48; // can be 0
+    final static int testMsgSize = 6; // can be 0
 
-    //    final static int iterationsPerTestCycle = 1488;
     final static int iterationsPerTestCycle = 1_000_000;
-
 
     final static int bufferSizeTest = 4 * 1024 * 1024;
     final static SingleWriterRecorder hdrRecorder = new SingleWriterRecorder(Integer.MAX_VALUE, 2);

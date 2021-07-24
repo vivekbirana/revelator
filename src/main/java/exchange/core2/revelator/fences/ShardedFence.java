@@ -44,7 +44,7 @@ public final class ShardedFence {
 
         final int fenceId = shardFunction.applyAsInt(id);
         final IFence fence = fences[fenceId];
-        final long seq = fence.getVolatile(lastKnown[fenceId]);
+        final long seq = fence.getAcquire(lastKnown[fenceId]);
         lastKnown[fenceId] = seq;
         return seq;
     }

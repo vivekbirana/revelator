@@ -1,6 +1,6 @@
 package exchange.core2.revelator.primes;
 
-import exchange.core2.revelator.LatencyTools;
+import exchange.core2.revelator.utils.LatencyTools;
 import exchange.core2.revelator.Revelator;
 import exchange.core2.revelator.processors.ProcessorsFactories;
 import exchange.core2.revelator.utils.AffinityThreadFactory;
@@ -111,7 +111,7 @@ public final class RevelatorPipelineTester {
 //            log.debug("claimSeq={}", claimSeq);
                     long x = 0;
 
-                    for (int k = 0; k < testMsgSize; k += 8) {
+                    for (int k = 0; k < testMsgSize; k++) {
 //                        log.debug("WRITE data[{}]: {}", k, i);
                         r.writeLongDataUnsafe(index + k, i);
                         x += i;
@@ -168,7 +168,8 @@ public final class RevelatorPipelineTester {
     }
 
 
-    private static void handleMessage(long addr,
+    private static void handleMessage(long[] buffer,
+                                      int index,
                                       int msgSize,
                                       long timestamp,
                                       long correlationId,
@@ -188,8 +189,8 @@ public final class RevelatorPipelineTester {
 //            log.debug("READ correlationId: {}", correlationId);
 
             long x = 0;
-            for (int k = 0; k < testMsgSize; k += 8) {
-                final long data = Revelator.UNSAFE.getLong(addr + k);
+            for (int k = 0; k < testMsgSize; k++) {
+                final long data = buffer[index + k];
                 x += data;
 //                log.debug("READ data[{}]: {}", k, data);
             }
@@ -210,7 +211,7 @@ public final class RevelatorPipelineTester {
     }
 
 
-    final static int testMsgSize = 48; // can be 0
+    final static int testMsgSize = 6; // can be 0
 
     //    final static int iterationsPerTestCycle = 1488;
     final static int iterationsPerTestCycle = 1_000_000;

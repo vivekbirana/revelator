@@ -1,15 +1,16 @@
 package exchange.core2.revelator.payments;
 
-import exchange.core2.revelator.Revelator;
 import exchange.core2.revelator.buffers.LocalResultsByteBuffer;
+import exchange.core2.revelator.processors.simple.SimpleMessageHandler;
 
-public final class ResponsesAggregator {
+public final class ResponsesAggregator implements SimpleMessageHandler {
 
 
     private final LocalResultsByteBuffer resultsBuffer;
     private final IPaymentsResponseHandler responseHandler;
 
-    private long lastAddr;
+    private int lastAddr;
+    private long[] lastBuf;
 
     public ResponsesAggregator(LocalResultsByteBuffer resultsBuffer,
                                IPaymentsResponseHandler responseHandler) {
@@ -18,16 +19,19 @@ public final class ResponsesAggregator {
         this.responseHandler = responseHandler;
     }
 
-    public void handleMessage(final long addr,
+    @Override
+    public void handleMessage(final long[] buffer,
+                              final int index,
                               final int msgSize,
                               final long timestamp,
                               final long correlationId,
                               final byte msgType) {
 
         // TODO mic from multiple buffers
-        final long resultsCode = resultsBuffer.get(addr);
+        final long resultsCode = resultsBuffer.get(index);
 
-        this.lastAddr = addr;
+        this.lastAddr = index;
+        this.lastBuf = buffer;
 
         responseHandler.commandResult(
                 timestamp,
@@ -41,17 +45,17 @@ public final class ResponsesAggregator {
     private final IPaymentsResponseHandler.ITransferAccessor transferAccessor = new IPaymentsResponseHandler.ITransferAccessor() {
         @Override
         public long getAccountFrom() {
-            return Revelator.UNSAFE.getLong(lastAddr);
+            return lastBuf[lastAddr];
         }
 
         @Override
         public long getAccountTo() {
-            return Revelator.UNSAFE.getLong(lastAddr + 8);
+            return lastBuf[lastAddr + 1];
         }
 
         @Override
         public long getAmount() {
-            return Revelator.UNSAFE.getLong(lastAddr + 16);
+            return lastBuf[lastAddr + 2];
         }
 
         @Override

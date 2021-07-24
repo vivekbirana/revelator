@@ -7,9 +7,9 @@ import exchange.core2.revelator.processors.IFlowProcessorsFactory;
 import org.agrona.BitUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import sun.misc.Unsafe;
 
-import java.lang.reflect.Field;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ThreadFactory;
@@ -19,24 +19,14 @@ public final class Revelator implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(Revelator.class);
 
-    public static final int MSG_HEADER_SIZE = 24;
+    public static final int MSG_HEADER_SIZE = 3;
     public static final byte MSG_TYPE_POISON_PILL = 31;
 
-    public static final Unsafe UNSAFE;
-
-    static {
-        try {
-            final Field f = Unsafe.class.getDeclaredField("theUnsafe");
-            f.setAccessible(true);
-            UNSAFE = (Unsafe) f.get(null);
-        } catch (NoSuchFieldException | IllegalAccessException ex) {
-            throw new RuntimeException(ex);
-        }
-    }
+    private final static VarHandle varHandle = MethodHandles.arrayElementVarHandle(long[].class);
 
     private final int bufferSize;
     private final int indexMask;
-    private final long bufferAddr;
+    private final long[] buffer;
 
     private final List<? extends IFlowProcessor> processors;
 
@@ -71,19 +61,17 @@ public final class Revelator implements AutoCloseable {
 
         final int indexMask = bufferSize - 1;
 
-        final long bufferAddr = UNSAFE.allocateMemory(bufferSize);
-
-        log.debug("bufferAddr={}", String.format("%X", bufferAddr));
+        final long[] buffer = new long[bufferSize];
 
         final IFlowProcessorsFactory.ProcessorsChain chain = flowProcessorsFactory.createProcessors(
                 inboundFence,
-                new RevelatorConfig(indexMask, bufferSize, bufferAddr));
+                new RevelatorConfig(indexMask, bufferSize, buffer));
 
 
         return new Revelator(
                 bufferSize,
                 indexMask,
-                bufferAddr,
+                buffer,
                 chain.getProcessors(),
                 threadFactory,
                 inboundFence,
@@ -93,7 +81,7 @@ public final class Revelator implements AutoCloseable {
 
     private Revelator(final int bufferSize,
                       final int indexMask,
-                      final long bufferAddr,
+                      final long[] buffer,
                       final List<? extends IFlowProcessor> processors,
                       final ThreadFactory threadFactory,
                       final SingleWriterFence inboundFence,
@@ -101,7 +89,7 @@ public final class Revelator implements AutoCloseable {
 
         this.bufferSize = bufferSize;
         this.indexMask = indexMask;
-        this.bufferAddr = bufferAddr;
+        this.buffer = buffer;
         this.processors = processors;
         this.threadFactory = threadFactory;
         this.inboundFence = inboundFence;
@@ -158,16 +146,11 @@ public final class Revelator implements AutoCloseable {
             throw new IllegalArgumentException("message type should be in range: 0..2^56-1");
         }
 
-        // check message size alignment to long
-        if ((claimingPayloadSize & 7) != 0) {
-            throw new IllegalArgumentException("payload size should have 8*N size");
-        }
-
         // calculate expected message size
         final int fullMessageSize = claimingPayloadSize + MSG_HEADER_SIZE;
 
         if (claimingPayloadSize < 0 || fullMessageSize > bufferSize) {
-            throw new IllegalArgumentException("n must be >= 0 and < bufferSize");
+            throw new IllegalArgumentException("claimed size must be >= 0 and < bufferSize");
         }
 
         long msgStartSequence = reservedPosition;
@@ -187,7 +170,7 @@ public final class Revelator implements AutoCloseable {
             // there is always at least 8 bytes available due to alignment (only need to check wrap point before writing)
             // so we check wrap point for claimed message (just to do it once)
             wrapPointCheckWaitUpdate(msgStartSequence, wrapPoint + remainingSpaceBytes);
-            writeLongDataUnsafe(index, 0L);
+            buffer[index] = 0L;
 
             index = 0;
             msgStartSequence += remainingSpaceBytes;
@@ -208,9 +191,9 @@ public final class Revelator implements AutoCloseable {
 
         // TODO put UserCookie (4bytes), size (2bytes - 512K max msg size)
 
-        writeLongDataUnsafe(index, msgTypeEncoded | correlationId);
-        writeLongDataUnsafe(index + 8, timestamp);
-        writeLongDataUnsafe(index + 16, claimingPayloadSize >> 3);
+        buffer[index] = msgTypeEncoded | correlationId;
+        buffer[index + 1] = timestamp;
+        buffer[index + 2] = claimingPayloadSize;
 
         final long payloadStartSeq = msgStartSequence + MSG_HEADER_SIZE;
 
@@ -239,7 +222,7 @@ public final class Revelator implements AutoCloseable {
 
 //            log.debug(" tailFence.getVolatile()={}",tailFence.getVolatile());
             long minSequence;
-            while (wrapPoint > (minSequence = Math.min(releasingFence.getVolatile(cachedOutboundPosition), msgStartSequence))) {
+            while (wrapPoint > (minSequence = Math.min(releasingFence.getAcquire(cachedOutboundPosition), msgStartSequence))) {
                 LockSupport.parkNanos(1L); // TODO: Use waitStrategy to spin? (can cause starvation)
 //                Thread.onSpinWait();
 //                Thread.yield();
@@ -253,20 +236,17 @@ public final class Revelator implements AutoCloseable {
 
     public void writeLongData(long sequence, int offset, long value) {
         final int idx = (int) sequence & indexMask;
-        final long address = bufferAddr + idx + offset;
-//        log.debug("WRITING LONG OFFSET={}", address - bufferAddr);
-        UNSAFE.putLong(address, value);
-//        log.debug("WRITING LONG DONE");
+        buffer[idx + offset] = value;
     }
 
     public void writeLongDataUnsafe(int index, long value) {
-        UNSAFE.putLong(bufferAddr + index, value);
+        buffer[index] = value;
     }
 
 
     public void publish(long positionPlusSize) {
 //        log.debug("PUBLISH positionPlusSize={}", positionPlusSize);
-        inboundFence.lazySet(positionPlusSize);
+        inboundFence.setRelease(positionPlusSize);
         // todo waitStrategy.signalAllWhenBlocking();
     }
 
@@ -286,7 +266,6 @@ public final class Revelator implements AutoCloseable {
     @Override
     public void close() throws Exception {
 
-        UNSAFE.freeMemory(bufferAddr);
 
     }
 }

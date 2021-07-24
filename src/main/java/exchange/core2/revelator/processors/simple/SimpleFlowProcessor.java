@@ -18,7 +18,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
     private final SingleWriterFence releasingFence;
 
     private final int indexMask;
-    private final long bufferAddr;
+    private final long[] buffer;
     private final int bufferSize;
 
     private long superCounter;
@@ -32,7 +32,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
         this.inboundFence = inboundFence;
         this.releasingFence = releasingFence;
         this.indexMask = config.getIndexMask();
-        this.bufferAddr = config.getBufferAddr();
+        this.buffer = config.getBuffer();
         this.bufferSize = config.getBufferSize();
     }
 
@@ -45,7 +45,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 
             long availableSeq;
             int c = 0;
-            while ((availableSeq = inboundFence.getVolatile(positionSeq)) <= positionSeq) {
+            while ((availableSeq = inboundFence.getAcquire(positionSeq)) <= positionSeq) {
                 Thread.onSpinWait();
 //                LockSupport.parkNanos(1L);
 //                    if (c++ == 100) {
@@ -65,9 +65,9 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 
 //            log.debug("reading at index={} ({}<{})",(int) (positionSeq & indexMask), positionSeq , availableSeq);
 
-                final long headerStartAddress = bufferAddr + (int) (positionSeq & indexMask);
+                final int index = (int) (positionSeq & indexMask);
 
-                final long header1 = Revelator.UNSAFE.getLong(headerStartAddress);
+                final long header1 = buffer[index];
 
                 if (header1 == 0L) {
                     // skip until end of the buffer
@@ -91,7 +91,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
                 if (msgType == Revelator.MSG_TYPE_POISON_PILL) {
 
                     log.debug("processor shutdown (received msgType={}, publishing positionSeq={})", msgType, positionSeq);
-                    releasingFence.lazySet(positionSeq);
+                    releasingFence.setRelease(positionSeq);
                     return;
 
                 } else {
@@ -99,18 +99,18 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 //            log.debug("{}", String.format("msgSizeLongsCompact=%X", msgSizeLongsCompact));
 //            log.debug("{}", String.format("msgType=%X", msgType));
 
-                    final long timestamp = Revelator.UNSAFE.getLong(headerStartAddress + 8);
+                    final long timestamp = buffer[index + 1];
 
-                    final int payloadSize = (int) Revelator.UNSAFE.getLong(headerStartAddress + 16) << 3;
+                    // payload size in longs
+                    final int payloadSize = (int) buffer[index + 2];
 //                log.debug("custom payloadSize={}", payloadSize);
 
-                    final long messageStartAddress = headerStartAddress + Revelator.MSG_HEADER_SIZE;
-                    if (messageStartAddress + payloadSize > bufferAddr + bufferSize) {
+                    final int indexMsg = index + Revelator.MSG_HEADER_SIZE;
+                    if (indexMsg + payloadSize > bufferSize) {
                         throw new IllegalStateException("Failed to decode message: headerSize=" + Revelator.MSG_HEADER_SIZE
                                 + " payloadSize=" + payloadSize
                                 + " correlationId=" + correlationId
-                                + " bufferAddr=" + bufferAddr
-                                + " unexpected " + (messageStartAddress + payloadSize - bufferAddr - bufferSize) + " bytes");
+                                + " unexpected " + (indexMsg + payloadSize - bufferSize) + " bytes");
                     }
 
 
@@ -119,7 +119,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 //                        messageStartAddress, headerStartAddress - bufferAddr, payloadSize);
 
 //                Thread.sleep(1);
-                        handler.handle(messageStartAddress, payloadSize, timestamp, correlationId, msgType);
+                        handler.handleMessage(buffer, indexMsg, payloadSize, timestamp, correlationId, msgType);
 //                log.debug("DONE");
                     } catch (final Exception ex) {
                         log.debug("Exception when processing batch", ex);
@@ -132,7 +132,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
                 }
             }
 
-            releasingFence.lazySet(availableSeq);
+            releasingFence.setRelease(availableSeq);
         }
 
     }

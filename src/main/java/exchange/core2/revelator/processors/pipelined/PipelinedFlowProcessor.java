@@ -1,7 +1,6 @@
 package exchange.core2.revelator.processors.pipelined;
 
 
-import exchange.core2.revelator.Revelator;
 import exchange.core2.revelator.fences.IFence;
 import exchange.core2.revelator.fences.SingleWriterFence;
 import exchange.core2.revelator.processors.IFlowProcessor;
@@ -38,7 +37,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
 
     private final int indexMask;
-    private final long bufferAddr;
+    private final long[] buffer;
 
 
     private final int[] workWeights;
@@ -50,7 +49,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
                                   final SingleWriterFence inboundFence,
                                   final SingleWriterFence releasingFence,
                                   int indexMask,
-                                  long bufferAddr) {
+                                  long[] buffer) {
 
         this.handlers = handlers;
         this.numHandlers = handlers.length;
@@ -59,7 +58,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
         this.inboundFence = inboundFence;
         this.releasingFence = releasingFence;
         this.indexMask = indexMask;
-        this.bufferAddr = bufferAddr;
+        this.buffer = buffer;
     }
 
     @SuppressWarnings("unchecked")
@@ -110,7 +109,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
                 // otherwise spin on fence volatile read
                 //do {
                 //  workCounter++;
-                availableOffset = inboundFence.getVolatile(availableOffset);
+                availableOffset = inboundFence.getAcquire(availableOffset);
                 //Thread.onSpinWait();
                 //} while (availableOffset <= initializerOffset);
 
@@ -122,9 +121,9 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
 //            log.debug("reading at index={} ({}<{})",(int) (positionSeq & indexMask), positionSeq , availableSeq);
 
-                    final long headerStartAddress = bufferAddr + (int) (initializerOffset & indexMask);
+                    final int intdex = (int) (initializerOffset & indexMask);
 
-                    final long header1 = Revelator.UNSAFE.getLong(headerStartAddress);
+                    final long header1 = buffer[intdex];
 
                     if (header1 == 0L) {
                         // empty message - skip until end of the buffer
@@ -144,8 +143,8 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
                     // TODO throw shutdown signal exception
 
-                    session.timestamp = Revelator.UNSAFE.getLong(headerStartAddress + 8);
-                    session.payloadSize = (int) Revelator.UNSAFE.getLong(headerStartAddress + 16) << 3;
+                    session.timestamp = buffer[intdex + 1];
+                    session.payloadSize = (int) buffer[intdex + 2] << 3;
 
                     if (tailSequence == gatingSequence) {
                         break;
@@ -184,7 +183,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
                             // every time last handler makes progress - update outgoingFence
                             // TODO check if it slows down compared to publishing once-by-batch in disruptor
                             if (handlerIdx == numHandlers - 1) {
-                                releasingFence.lazySet(session.globalOffset);
+                                releasingFence.setRelease(session.globalOffset);
                             }
 
                         } else {

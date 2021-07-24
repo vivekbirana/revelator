@@ -1,13 +1,12 @@
 package exchange.core2.revelator.payments;
 
-import exchange.core2.revelator.Revelator;
 import exchange.core2.revelator.buffers.LocalResultsByteBuffer;
+import exchange.core2.revelator.processors.simple.SimpleMessageHandler;
 
-public final class PaymentsHandler {
+public final class PaymentsHandler implements SimpleMessageHandler {
 
 
-    private final AccountsProcessor
-            accountsProcessor;
+    private final AccountsProcessor accountsProcessor;
     private final LocalResultsByteBuffer resultsBuffer;
 
     public PaymentsHandler(AccountsProcessor accountsProcessor,
@@ -16,7 +15,8 @@ public final class PaymentsHandler {
         this.resultsBuffer = resultsBuffer;
     }
 
-    public void handleMessage(final long addr,
+    public void handleMessage(final long[] buffer,
+                              final int addr,
                               final int msgSize,
                               final long timestamp,
                               final long correlationId,
@@ -25,27 +25,23 @@ public final class PaymentsHandler {
 //        log.debug("Handle message bufAddr={} offset={} msgSize={}", bufAddr, offset, msgSize);
 
         switch (msgType) {
-
-            case PaymentsApi.CMD_TRANSFER: {
-                final long accountFrom = Revelator.UNSAFE.getLong(addr);
-                final long accountTo = Revelator.UNSAFE.getLong(addr + 8);
-                final long amount = Revelator.UNSAFE.getLong(addr + 16);
+            case PaymentsApi.CMD_TRANSFER -> {
+                final long accountFrom = buffer[addr];
+                final long accountTo = buffer[addr + 1];
+                final long amount = buffer[addr + 2];
 
                 final boolean success = accountsProcessor.transfer(accountFrom, accountTo, amount);
                 resultsBuffer.set(addr, success ? (byte) 1 : -1);
 
-                break;
             }
 
-            case PaymentsApi.CMD_ADJUST: {
+            case PaymentsApi.CMD_ADJUST -> {
 
-                final long account = Revelator.UNSAFE.getLong(addr);
-                final long amount = Revelator.UNSAFE.getLong(addr + 8);
+                final long account = buffer[addr];
+                final long amount = buffer[addr + 1];
 
                 final boolean success = accountsProcessor.adjustBalance(account, amount);
                 resultsBuffer.set(addr, success ? (byte) 1 : -1);
-
-                break;
             }
         }
 

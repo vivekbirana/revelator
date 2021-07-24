@@ -1,6 +1,6 @@
 package exchange.core2.revelator.primes;
 
-import exchange.core2.revelator.LatencyTools;
+import exchange.core2.revelator.utils.LatencyTools;
 import org.HdrHistogram.Histogram;
 import org.HdrHistogram.SingleWriterRecorder;
 import org.agrona.PrintBufferUtil;

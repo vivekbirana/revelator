@@ -9,11 +9,6 @@ public interface PipelinedStageHandler<S extends PipelinedFlowSession> {
      */
     boolean process(S messageSession);
 
-//    void handle(long msgAddr,
-//                int msgSize,
-//                long timestamp,
-//                long correlationId,
-//                byte msgType);
 
     int getHitWorkWeight();
 

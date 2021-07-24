@@ -12,12 +12,12 @@ public final class AggregatingMinFence implements IFence {
     // TODO remember last rejected fence and start check from that number (such implementation is not thread safe though)
 
     @Override
-    public long getVolatile(final long lastKnown) {
+    public long getAcquire(final long lastKnown) {
 
         long min = Long.MAX_VALUE;
 
         for (final IFence fence : fences) {
-            final long seq = fence.getVolatile(lastKnown);
+            final long seq = fence.getAcquire(lastKnown);
 
             if (seq <= lastKnown) {
                 // no need to check remaining fences - no progress can be made anyway
