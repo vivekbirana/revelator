@@ -7,10 +7,14 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.function.LongToIntFunction;
 
+/**
+ * Not thread-safe.
+ * Each consumer should have its own copy.
+ */
 public final class ShardedFence {
 
-    public static ShardedFence create(final List<IFlowProcessor> processors,
-                                      final LongToIntFunction shardFunction) {
+    public static ShardedFence createFromProcessors(final List<IFlowProcessor> processors,
+                                                    final LongToIntFunction shardFunction) {
 
 
         final IFence[] fences = processors.stream()

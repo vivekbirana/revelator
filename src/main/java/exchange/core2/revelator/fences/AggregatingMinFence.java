@@ -1,10 +1,15 @@
 package exchange.core2.revelator.fences;
 
+import java.util.List;
+
 public final class AggregatingMinFence implements IFence {
 
 
     public AggregatingMinFence(IFence[] fences) {
         this.fences = fences;
+    }
+    public AggregatingMinFence(List<IFence> fences) {
+        this.fences = fences.toArray(IFence[]::new);
     }
 
     private final IFence[] fences;

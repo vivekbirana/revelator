@@ -5,7 +5,7 @@ import exchange.core2.revelator.fences.IFence;
 import exchange.core2.revelator.fences.SingleWriterFence;
 import exchange.core2.revelator.processors.IFlowProcessor;
 
-import java.util.Arrays;
+import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
@@ -33,7 +33,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
     private final S[] sessions;
 
     private final IFence inboundFence;
-    private final SingleWriterFence releasingFence;
+    private final SingleWriterFence releasingFence = new SingleWriterFence();
 
 
     private final int indexMask;
@@ -43,20 +43,18 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
     private final int[] workWeights;
 //    private final int missWeights[];
 
-
-    public PipelinedFlowProcessor(final PipelinedStageHandler<S>[] handlers,
+    @SuppressWarnings("unchecked")
+    public PipelinedFlowProcessor(final List<PipelinedStageHandler<S>> handlers,
                                   final Supplier<S> sessionsFactory,
-                                  final SingleWriterFence inboundFence,
-                                  final SingleWriterFence releasingFence,
+                                  final IFence inboundFence,
                                   int indexMask,
                                   long[] buffer) {
 
-        this.handlers = handlers;
-        this.numHandlers = handlers.length;
+        this.handlers = handlers.toArray(x -> new PipelinedStageHandler[handlers.size()]);
+        this.numHandlers = handlers.size();
         this.sessions = createSessions(sessionsFactory, PIPELINE_SIZE);
-        this.workWeights = Arrays.stream(handlers).mapToInt(PipelinedStageHandler::getHitWorkWeight).toArray();
+        this.workWeights = handlers.stream().mapToInt(PipelinedStageHandler::getHitWorkWeight).toArray();
         this.inboundFence = inboundFence;
-        this.releasingFence = releasingFence;
         this.indexMask = indexMask;
         this.buffer = buffer;
     }
@@ -121,9 +119,9 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
 //            log.debug("reading at index={} ({}<{})",(int) (positionSeq & indexMask), positionSeq , availableSeq);
 
-                    final int intdex = (int) (initializerOffset & indexMask);
+                    final int index = (int) (initializerOffset & indexMask);
 
-                    final long header1 = buffer[intdex];
+                    final long header1 = buffer[index];
 
                     if (header1 == 0L) {
                         // empty message - skip until end of the buffer
@@ -136,6 +134,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
                     final S session = sessions[(int) tailSequence & pipelineMask];
 
                     session.globalOffset = initializerOffset;
+                    session.bufferIndex = index;
                     session.correlationId = header1 & 0x00FF_FFFF_FFFF_FFFFL;
 
                     final int header2 = (int) (header1 >>> 56);
@@ -143,8 +142,8 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
                     // TODO throw shutdown signal exception
 
-                    session.timestamp = buffer[intdex + 1];
-                    session.payloadSize = (int) buffer[intdex + 2] << 3;
+                    session.timestamp = buffer[index + 1];
+                    session.payloadSize = (int) buffer[index + 2] << 3;
 
                     if (tailSequence == gatingSequence) {
                         break;

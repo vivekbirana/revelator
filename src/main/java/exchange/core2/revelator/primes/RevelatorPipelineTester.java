@@ -172,6 +172,7 @@ public final class RevelatorPipelineTester {
                                       int index,
                                       int msgSize,
                                       long timestamp,
+                                      long globalOffset,
                                       long correlationId,
                                       byte msgType) {
 

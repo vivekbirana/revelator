@@ -2,6 +2,9 @@ package exchange.core2.revelator.payments;
 
 import exchange.core2.benchmarks.generator.clients.ClientsCurrencyAccountsGenerator;
 import exchange.core2.benchmarks.generator.currencies.CurrenciesGenerator;
+import exchange.core2.revelator.utils.LatencyTools;
+import org.HdrHistogram.Histogram;
+import org.HdrHistogram.SingleWriterRecorder;
 import org.apache.commons.lang3.mutable.MutableInt;
 import org.eclipse.collections.impl.map.mutable.primitive.IntLongHashMap;
 import org.eclipse.collections.impl.map.mutable.primitive.LongLongHashMap;
@@ -9,13 +12,22 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 
 public final class PaymentsTester {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentsTester.class);
 
+    private static final long END_BATCH_CORRELATION_ID = (1L << 56) - 1;
+
 
     public static void main(String[] args) {
+        PaymentsTester paymentsTester = new PaymentsTester();
+        paymentsTester.test();
+
+    }
+
+    public void test() {
 
         int seed = 1;
 
@@ -23,8 +35,12 @@ public final class PaymentsTester {
 
         log.info("Currencies: {}", currencies);
 
-        final int accountsToCreate = 1_000_000;
-        final int transfersToCreate = 3_000_000;
+//        final int accountsToCreate = 1_000_000;
+//        final int transfersToCreate = 3_000_000;
+
+        final int accountsToCreate = 10;
+        final int transfersToCreate = 30;
+
 
         final List<BitSet> clients = ClientsCurrencyAccountsGenerator.generateClients(accountsToCreate, currencies, seed);
 
@@ -57,11 +73,17 @@ public final class PaymentsTester {
 
         log.info("Generated {} maxBalances", maxBalances.size());
 
+        final CompletableFuture<Void> batchCompleted = new CompletableFuture<>();
+
+        final long startTimeNs = System.nanoTime();
 
         log.info("Creating payments core ...");
-        ResponseHandler responseHandler = new ResponseHandler();
+        final ResponseHandler responseHandler = new ResponseHandler(
+                batchCompleted,
+                END_BATCH_CORRELATION_ID,
+                startTimeNs);
 
-        final PaymentsCore paymentsCore = PaymentsCore.create(responseHandler);
+        final PaymentsCore paymentsCore = PaymentsCore.createSimple(responseHandler);
 
         log.info("Starting payments core ...");
         paymentsCore.start();
@@ -79,14 +101,55 @@ public final class PaymentsTester {
 
         log.info("Performing {} transfers ...", transfers.size());
 
-        transfers.forEach(order ->
-                paymentsApi.transfer(
-                        System.nanoTime(),
-                        correlationId.getAndIncrement(),
-                        order.sourceAccount,
-                        order.destinationAccount,
-                        order.amount,
-                        order.currency));
+        final long tps = 1_000_000;
+
+        final long picosPerCmd = (1024L * 1_000_000_000L) / tps;
+
+        long plannedTimestampPs = 0L;
+        long lastKnownTimestampPs = 0L;
+        int nanoTimeRequestsCounter = 0;
+
+        for (final TransferTestOrder order : transfers) {
+
+            plannedTimestampPs += picosPerCmd;
+
+            while (plannedTimestampPs > lastKnownTimestampPs) {
+
+                lastKnownTimestampPs = (System.nanoTime() - startTimeNs) << 10;
+
+                nanoTimeRequestsCounter++;
+
+                // spin until its time to send next command
+                Thread.onSpinWait(); // 1us-26  max34
+            }
+
+            log.info("plannedTimestampPs={}", plannedTimestampPs);
+
+            paymentsApi.transfer(
+                    plannedTimestampPs,
+                    correlationId.getAndIncrement(),
+                    order.sourceAccount,
+                    order.destinationAccount,
+                    order.amount,
+                    order.currency);
+        }
+
+        paymentsApi.adjustBalance(plannedTimestampPs, END_BATCH_CORRELATION_ID, -1, 0);
+
+        final float processingTimeUs = (System.nanoTime() - startTimeNs) / 1000f;
+        final float perfMt = (float) transfers.size() / processingTimeUs;
+        final float targetMt = (float) tps / 1_000_000.0f;
+        final String tag = String.format("%.2fns %.3f -> %.3f MT/s %.0f%%",
+                picosPerCmd / 1024.0, targetMt, perfMt, perfMt / targetMt * 100.0);
+
+        batchCompleted.join();
+
+        final Histogram histogram = responseHandler.hdrRecorder.getIntervalHistogram();
+        final Map<String, String> latencyReportFast = LatencyTools.createLatencyReportFast(histogram);
+        log.info("{} {} nanotimes={}", tag, latencyReportFast, nanoTimeRequestsCounter);
+
+
+        paymentsCore.stop();
 
         log.info("Done");
 
@@ -147,16 +210,48 @@ public final class PaymentsTester {
     }
 
 
-   private static class ResponseHandler implements IPaymentsResponseHandler {
+    private static class ResponseHandler implements IPaymentsResponseHandler {
+
+        private final CompletableFuture<Void> completed;
+        private final long lastCorrelationId;
+        private final long startTimeNs;
+
+        private final SingleWriterRecorder hdrRecorder = new SingleWriterRecorder(Integer.MAX_VALUE, 2);
+
+        private long cx = 0;
+
+        public ResponseHandler(CompletableFuture<Void> completed, long lastCorrelationId, long startTimeNs) {
+            this.completed = completed;
+            this.lastCorrelationId = lastCorrelationId;
+            this.startTimeNs = startTimeNs;
+        }
 
         @Override
         public void commandResult(long timestamp, long correlationId, int resultCode, IRequestAccessor accessor) {
-            log.debug("commandResult: {}->{}", correlationId, resultCode);
+            // log.debug("commandResult: {}->{}", correlationId, resultCode);
+
+
+            if (correlationId == lastCorrelationId) {
+                completed.complete(null);
+            }
+
+            //if (cx++ == 8) {
+                cx = 0;
+
+            final long nanoTime = System.nanoTime();
+            final long latency = nanoTime - startTimeNs - (timestamp >> 10);
+
+                log.info("timestamp={} latency={} nanoTime={} startTimeNs={}", timestamp, latency, nanoTime, startTimeNs);
+
+                hdrRecorder.recordValue(latency);
+            //}
+
+
         }
 
         @Override
         public void balanceUpdateEvent(long account, long diff, long newBalance) {
-            log.debug("balanceUpdateEvent: {}->{}", account, newBalance);
+            // log.debug("balanceUpdateEvent: {}->{}", account, newBalance);
         }
     }
 

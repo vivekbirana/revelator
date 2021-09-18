@@ -8,10 +8,9 @@ import org.agrona.BitUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.VarHandle;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.locks.LockSupport;
 
@@ -21,8 +20,6 @@ public final class Revelator implements AutoCloseable {
 
     public static final int MSG_HEADER_SIZE = 3;
     public static final byte MSG_TYPE_POISON_PILL = 31;
-
-    private final static VarHandle varHandle = MethodHandles.arrayElementVarHandle(long[].class);
 
     private final int bufferSize;
     private final int indexMask;
@@ -43,6 +40,8 @@ public final class Revelator implements AutoCloseable {
     private long cachedOutboundPosition = 0L; // cachedValue = min gating sequence in Disruptor
 
     private long tailStrike = 0L;
+
+    private CompletableFuture<Void> shutdownFuture;
 
     public static Revelator create(final int bufferSize,
                                    final IFlowProcessorsFactory flowProcessorsFactory,
@@ -107,7 +106,7 @@ public final class Revelator implements AutoCloseable {
         for (final IFlowProcessor processor : processors) {
 
             final Thread thread = threadFactory.newThread(processor);
-            final String threadName = "PROC-" + c;
+            final String threadName = "PROC-" + c; // TODO allow custom thread naming policy
             log.info("Starting processor {} (thread {})...", processor, threadName);
             thread.setName(threadName);
             thread.setDaemon(true);
@@ -117,14 +116,28 @@ public final class Revelator implements AutoCloseable {
         }
     }
 
+    public synchronized CompletableFuture<Void> stopAsync() {
 
-    public synchronized void stop() throws InterruptedException {
-        final long position = claimSingleMessage(0, 0L, 0L, MSG_TYPE_POISON_PILL);
-        publish(position);
+        if (shutdownFuture == null) {
 
-        for (final Thread thread : threads) {
-            thread.join();
+            final long position = claimSingleMessage(0, 0L, 0L, MSG_TYPE_POISON_PILL);
+            publish(position);
+
+            shutdownFuture = CompletableFuture.runAsync(() -> {
+                log.debug("Stopping {} revelator threads...", threads.size());
+                for (final Thread thread : threads) {
+                    try {
+                        log.debug("Waiting revelator thread {} to stop ...", thread.getName());
+                        thread.join();
+                    } catch (InterruptedException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                }
+                log.debug("All revelator threads stopped");
+            });
         }
+
+        return shutdownFuture;
     }
 
     /**
@@ -138,12 +151,12 @@ public final class Revelator implements AutoCloseable {
                                    final long correlationId,
                                    final byte messageType) {
 
-        if (messageType < 1 || messageType >= MSG_TYPE_POISON_PILL) {
-            throw new IllegalArgumentException("message type should be in range: 1..30");
+        if (messageType < 1 || messageType > MSG_TYPE_POISON_PILL) {
+            throw new IllegalArgumentException("message type should be in range: 1.." + MSG_TYPE_POISON_PILL);
         }
 
         if ((correlationId >> 56) != 0) {
-            throw new IllegalArgumentException("message type should be in range: 0..2^56-1");
+            throw new IllegalArgumentException("correlationId should be in range: 0..2^56-1");
         }
 
         // calculate expected message size
@@ -238,6 +251,18 @@ public final class Revelator implements AutoCloseable {
         final int idx = (int) sequence & indexMask;
         buffer[idx + offset] = value;
     }
+
+
+    public void writeLongData(long sequence, int offset, long value0, long value1, long value2, long value3, long value4, long value5) {
+        final int pos = ((int) sequence & indexMask) + offset;
+        buffer[pos] = value0;
+        buffer[pos + 1] = value1;
+        buffer[pos + 2] = value2;
+        buffer[pos + 3] = value3;
+        buffer[pos + 4] = value4;
+        buffer[pos + 5] = value5;
+    }
+
 
     public void writeLongDataUnsafe(int index, long value) {
         buffer[index] = value;

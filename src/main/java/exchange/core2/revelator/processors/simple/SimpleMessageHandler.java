@@ -12,7 +12,7 @@ public interface SimpleMessageHandler {
                        int index,
                        int msgSize,
                        long timestamp,
+                       long globalOffset,
                        long correlationId,
                        byte msgType);
-
 }

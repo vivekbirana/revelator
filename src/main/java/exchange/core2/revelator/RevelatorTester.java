@@ -3,6 +3,7 @@ package exchange.core2.revelator;
 import exchange.core2.revelator.processors.ProcessorsFactories;
 import exchange.core2.revelator.utils.AffinityThreadFactory;
 import exchange.core2.revelator.utils.LatencyTools;
+import jdk.internal.vm.annotation.Contended;
 import net.openhft.affinity.AffinityLock;
 import org.HdrHistogram.Histogram;
 import org.HdrHistogram.SingleWriterRecorder;
@@ -23,16 +24,16 @@ public final class RevelatorTester {
 
         hdrRecorder.reset();
 
+        final AffinityThreadFactory atf = new AffinityThreadFactory(
+                AffinityThreadFactory.ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_PHYSICAL_CORE);
+
+        final Revelator r = Revelator.create(
+                bufferSizeTest,
+                ProcessorsFactories.single(RevelatorTester::handleMessage),
+                atf);
+
+
         try (final AffinityLock lock = AffinityLock.acquireCore()) {
-
-
-            final AffinityThreadFactory atf = new AffinityThreadFactory(
-                    AffinityThreadFactory.ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_PHYSICAL_CORE);
-
-            final Revelator r = Revelator.create(
-                    bufferSizeTest,
-                    ProcessorsFactories.single(RevelatorTester::handleMessage),
-                    atf);
 
             r.start();
 
@@ -87,11 +88,14 @@ public final class RevelatorTester {
 //            log.debug("claimSeq={}", claimSeq);
                     long x = 0;
 
-                    for (int k = 0; k < testMsgSize; k ++) {
+                    for (int k = 0; k < testMsgSize; k++) {
 //                        log.debug("WRITE data[{}]: {}", k, i);
                         r.writeLongDataUnsafe(index + k, i);
                         x += i;
                     }
+
+//                    r.writeLongData(claimSeq, 0, i, i + 1, i + 2, i + 3, i + 4, i + 5);
+//                    long x = i * 6L + 15;
 
                     expectedXorData = x + (expectedXorData ^ correlationId);
 
@@ -146,6 +150,7 @@ public final class RevelatorTester {
                                       int index,
                                       int msgSize,
                                       long timestamp,
+                                      long globalOffset,
                                       long correlationId,
                                       byte msgType) {
 
@@ -192,6 +197,7 @@ public final class RevelatorTester {
     final static int bufferSizeTest = 4 * 1024 * 1024;
     final static SingleWriterRecorder hdrRecorder = new SingleWriterRecorder(Integer.MAX_VALUE, 2);
 
+    @Contended
     static long xorData = 0L;
     static int processedMessages = 0;
 
@@ -203,6 +209,7 @@ public final class RevelatorTester {
 
     static double avgBatch = 1;
 
+    @Contended
     static int cx = 0;
 
 

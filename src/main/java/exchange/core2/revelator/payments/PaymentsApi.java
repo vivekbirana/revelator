@@ -7,6 +7,8 @@ public final class PaymentsApi {
 
     public final static byte CMD_TRANSFER = (byte) 3;
     public final static byte CMD_ADJUST = (byte) 5;
+    public final static byte CMD_OPEN_ACCOUNT = (byte) 7;
+    public final static byte CMD_CLOSE_ACCOUNT = (byte) 9;
     public final static byte QUERY_GET_BALANCE = (byte) 10;
 
 
@@ -54,6 +56,5 @@ public final class PaymentsApi {
 
         revelator.publish(claimSeq + msgSize);
     }
-
 
 }

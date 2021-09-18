@@ -19,7 +19,6 @@ public class ProcessorsFactories {
             final SimpleFlowProcessor simpleFlowProcessor = new SimpleFlowProcessor(
                     handler,
                     inboundFence,
-                    new SingleWriterFence(),
                     config);
 
             return new IFlowProcessorsFactory.ProcessorsChain(
@@ -37,7 +36,6 @@ public class ProcessorsFactories {
                     .map(handler -> new SimpleFlowProcessor(
                             handler,
                             inboundFence,
-                            new SingleWriterFence(),
                             config))
                     .collect(Collectors.toList());
 
@@ -64,7 +62,6 @@ public class ProcessorsFactories {
                 final SimpleFlowProcessor processor = new SimpleFlowProcessor(
                         handler,
                         lastFence,
-                        new SingleWriterFence(),
                         config);
 
                 processors.add(processor);

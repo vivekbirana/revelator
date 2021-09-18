@@ -24,6 +24,7 @@ public final class ResponsesAggregator implements SimpleMessageHandler {
                               final int index,
                               final int msgSize,
                               final long timestamp,
+                              final long globalOffset,
                               final long correlationId,
                               final byte msgType) {
 

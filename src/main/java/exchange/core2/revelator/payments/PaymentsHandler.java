@@ -2,8 +2,12 @@ package exchange.core2.revelator.payments;
 
 import exchange.core2.revelator.buffers.LocalResultsByteBuffer;
 import exchange.core2.revelator.processors.simple.SimpleMessageHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class PaymentsHandler implements SimpleMessageHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(PaymentsHandler.class);
 
 
     private final AccountsProcessor accountsProcessor;
@@ -15,14 +19,16 @@ public final class PaymentsHandler implements SimpleMessageHandler {
         this.resultsBuffer = resultsBuffer;
     }
 
+    @Override
     public void handleMessage(final long[] buffer,
                               final int addr,
                               final int msgSize,
                               final long timestamp,
+                              final long globalOffset,
                               final long correlationId,
                               final byte msgType) {
 
-//        log.debug("Handle message bufAddr={} offset={} msgSize={}", bufAddr, offset, msgSize);
+        //log.debug("Handle message correlationId={}", correlationId);
 
         switch (msgType) {
             case PaymentsApi.CMD_TRANSFER -> {

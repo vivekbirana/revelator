@@ -15,7 +15,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
     private final SimpleMessageHandler handler;
 
     private final IFence inboundFence;
-    private final SingleWriterFence releasingFence;
+    private final SingleWriterFence releasingFence = new SingleWriterFence();
 
     private final int indexMask;
     private final long[] buffer;
@@ -25,12 +25,10 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 
     public SimpleFlowProcessor(final SimpleMessageHandler handler,
                                final IFence inboundFence,
-                               final SingleWriterFence releasingFence,
                                final RevelatorConfig config) {
 
         this.handler = handler;
         this.inboundFence = inboundFence;
-        this.releasingFence = releasingFence;
         this.indexMask = config.getIndexMask();
         this.buffer = config.getBuffer();
         this.bufferSize = config.getBufferSize();
@@ -63,6 +61,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 
             while (positionSeq < availableSeq) {
 
+//            log.debug("positionSeq={} availableSeq={}", positionSeq, availableSeq);
 //            log.debug("reading at index={} ({}<{})",(int) (positionSeq & indexMask), positionSeq , availableSeq);
 
                 final int index = (int) (positionSeq & indexMask);
@@ -90,8 +89,8 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 
                 if (msgType == Revelator.MSG_TYPE_POISON_PILL) {
 
-                    log.debug("processor shutdown (received msgType={}, publishing positionSeq={})", msgType, positionSeq);
-                    releasingFence.setRelease(positionSeq);
+                    log.debug("processor shutdown (received msgType={}, publishing positionSeq={}+{})", msgType, positionSeq, Revelator.MSG_HEADER_SIZE);
+                    releasingFence.setRelease(positionSeq + Revelator.MSG_HEADER_SIZE);
                     return;
 
                 } else {
@@ -119,7 +118,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 //                        messageStartAddress, headerStartAddress - bufferAddr, payloadSize);
 
 //                Thread.sleep(1);
-                        handler.handleMessage(buffer, indexMsg, payloadSize, timestamp, correlationId, msgType);
+                        handler.handleMessage(buffer, indexMsg, payloadSize, timestamp, positionSeq, correlationId, msgType);
 //                log.debug("DONE");
                     } catch (final Exception ex) {
                         log.debug("Exception when processing batch", ex);
@@ -132,6 +131,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
                 }
             }
 
+//            log.debug("RELEASE {}", availableSeq);
             releasingFence.setRelease(availableSeq);
         }
 

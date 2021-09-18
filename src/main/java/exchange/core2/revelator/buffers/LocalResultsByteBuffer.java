@@ -2,12 +2,15 @@ package exchange.core2.revelator.buffers;
 
 import org.agrona.BitUtil;
 
-public class LocalResultsByteBuffer {
+public final class LocalResultsByteBuffer {
 
     private final int size;
     private final byte[] buffer;
     private final long indexMask;
 
+    // TODO can make msg size=4 - longs, so buffer will more compact (>>2)
+
+    // TODO another idea - idependen counters (need deterministic framework)
 
     public static LocalResultsByteBuffer create(int revelatorBufferSize) {
 
@@ -15,7 +18,7 @@ public class LocalResultsByteBuffer {
             throw new IllegalArgumentException("buffer size must be 2^N");
         }
 
-        final int bufferSize = revelatorBufferSize >> 4; // min message size is 24
+        final int bufferSize = revelatorBufferSize >> 1; // min message size is 3
 
         return new LocalResultsByteBuffer(bufferSize, new byte[bufferSize]);
     }
@@ -27,11 +30,11 @@ public class LocalResultsByteBuffer {
     }
 
     public byte get(long position) {
-        return buffer[(int) ((position >> 4) & indexMask)];
+        return buffer[(int) ((position >> 1) & indexMask)];
     }
 
     public void set(long position, byte value) {
-        buffer[(int) ((position >> 4) & indexMask)] = value;
+        buffer[(int) ((position >> 1) & indexMask)] = value;
     }
 
 }
