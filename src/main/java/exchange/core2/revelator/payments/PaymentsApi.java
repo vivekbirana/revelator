@@ -28,15 +28,15 @@ public final class PaymentsApi {
                          final long amount,
                          final int currency) {
 
-        final int msgSize = 32;
+        final int msgSize = 4;
         final long claimSeq = revelator.claimSingleMessage(msgSize, timestamp, correlationId, CMD_TRANSFER);
 
         final int index = (int) (claimSeq & indexMask);
 
         revelator.writeLongDataUnsafe(index, accountFrom);
-        revelator.writeLongDataUnsafe(index + 8, accountTo);
-        revelator.writeLongDataUnsafe(index + 16, amount);
-        revelator.writeLongDataUnsafe(index + 24, currency);
+        revelator.writeLongDataUnsafe(index + 1, accountTo);
+        revelator.writeLongDataUnsafe(index + 2, amount);
+        revelator.writeLongDataUnsafe(index + 3, currency);
 
         revelator.publish(claimSeq + msgSize);
     }
@@ -46,13 +46,13 @@ public final class PaymentsApi {
                               final long account,
                               final long amount) {
 
-        final int msgSize = 16;
+        final int msgSize = 2;
         final long claimSeq = revelator.claimSingleMessage(msgSize, timestamp, correlationId, CMD_ADJUST);
 
         final int index = (int) (claimSeq & indexMask);
 
         revelator.writeLongDataUnsafe(index, account);
-        revelator.writeLongDataUnsafe(index + 8, amount);
+        revelator.writeLongDataUnsafe(index + 1, amount);
 
         revelator.publish(claimSeq + msgSize);
     }

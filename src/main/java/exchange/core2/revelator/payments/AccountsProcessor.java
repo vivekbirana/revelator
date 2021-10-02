@@ -1,10 +1,16 @@
 package exchange.core2.revelator.payments;
 
 import org.eclipse.collections.impl.map.mutable.primitive.LongLongHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class AccountsProcessor {
 
     private final LongLongHashMap balances = new LongLongHashMap();
+
+    private static final Logger log = LoggerFactory.getLogger(AccountsProcessor.class);
+
+//    private final Long2LongHashMap2 balances2 = new Long2LongHashMap2(Long.MIN_VALUE);
 
     /// private static final long EXIST_FLAG = 0x8000_0000_0000_0000L;
 
@@ -27,7 +33,12 @@ public final class AccountsProcessor {
             final long availableFrom = balances.get(accountFrom);
             final long fromNewBalance = Math.subtractExact(availableFrom, amount);
 
+//            if(accountFrom == 268478209 || accountTo == 268478209){
+//                log.debug("TRANSFER {} available={} amountSubstract={}", accountFrom, availableFrom, amount);
+//            }
+
             if (fromNewBalance < 0) {
+                log.debug("NSF accountFrom={} available={} amount={}", accountFrom, availableFrom, amount);
                 return false; // NSF
             }
 
@@ -42,20 +53,48 @@ public final class AccountsProcessor {
             return true;
 
         } catch (final ArithmeticException ex) {
-
+            log.debug("Overflow accountFrom={} accountTo={}", accountFrom, accountTo);
             return false; // overflow
         }
+    }
+
+    public boolean transferFast(final long accountFrom,
+                                final long accountTo,
+                                final long amount) {
+
+        // TODO currency rate and fees
+
+        // find first account and check NSF
+        final long updatedFrom = balances.addToValue(accountFrom, -amount);
+
+        if (updatedFrom < 0) {
+//            log.debug("NSF accountFrom={} updatedFrom={} amount={}", accountFrom, updatedFrom, amount);
+            balances.addToValue(accountFrom, amount);
+            return false; // NSF
+        }
+
+//         find second account
+        balances.addToValue(accountTo, amount);
+
+        return true;
+
     }
 
     public boolean adjustBalance(final long account, final long amount) {
 
         try {
             final long available = balances.get(account);
+//            long available = balances2.get(account);
+//            if (available == balances2.missingValue()) {
+//                available = 0;
+//            }
 
-            final long newBalance = (amount >= 0)
+
+            final long newBalance = (amount <= 0)
                     ? Math.subtractExact(available, amount)
                     : Math.addExact(available, amount);
 
+//            balances.put(account, newBalance);
             balances.put(account, newBalance);
 
             return true;

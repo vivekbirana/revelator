@@ -36,7 +36,8 @@ public final class PaymentsHandler implements SimpleMessageHandler {
                 final long accountTo = buffer[addr + 1];
                 final long amount = buffer[addr + 2];
 
-                final boolean success = accountsProcessor.transfer(accountFrom, accountTo, amount);
+//                final boolean success = accountsProcessor.transfer(accountFrom, accountTo, amount);
+                final boolean success = accountsProcessor.transferFast(accountFrom, accountTo, amount);
                 resultsBuffer.set(addr, success ? (byte) 1 : -1);
 
             }
