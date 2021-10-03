@@ -68,6 +68,8 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 
                 final long header1 = buffer[index];
 
+//                log.debug("SIMPLE positionSeq={} availableSeq={} header1={}", positionSeq, availableSeq, header1);
+
                 if (header1 == 0L) {
                     // skip until end of the buffer
 
@@ -99,6 +101,7 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 //            log.debug("{}", String.format("msgType=%X", msgType));
 
                     final long timestamp = buffer[index + 1];
+//            log.debug("timestamp={}", timestamp);
 
                     // payload size in longs
                     final int payloadSize = (int) buffer[index + 2];

@@ -35,6 +35,15 @@ public final class SingleWriterFence implements IFence {
         return (long) VALUE.getAcquire(this);
     }
 
+    @Override
+    public long getVolatile() {
+        return (long) VALUE.getVolatile(this);
+    }
+
+    @Override
+    public long getOpaque() {
+        return (long) VALUE.getOpaque(this);
+    }
 
     /**
      * Perform an ordered write of this sequence.  The intent is

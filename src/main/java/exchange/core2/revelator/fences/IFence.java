@@ -4,4 +4,8 @@ public interface IFence {
 
     long getAcquire(long lastKnown);
 
+    long getVolatile();
+
+    long getOpaque();
+
 }

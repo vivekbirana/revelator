@@ -1,5 +1,6 @@
 package exchange.core2.revelator.payments;
 
+import exchange.core2.revelator.Revelator;
 import exchange.core2.revelator.buffers.LocalResultsByteBuffer;
 import exchange.core2.revelator.fences.IFence;
 import exchange.core2.revelator.processors.simple.SimpleMessageHandler;
@@ -44,11 +45,21 @@ public final class ResponsesAggregator2 implements SimpleMessageHandler {
 
         this.lastAddr = index;
 
+        final IPaymentsResponseHandler.IRequestAccessor accessor;
+        switch (msgType) {
+            case PaymentsApi.CMD_TRANSFER -> accessor = transferAccessor;
+            case PaymentsApi.CMD_ADJUST -> accessor = adjustBalanceAccessor;
+            case PaymentsApi.CMD_OPEN_ACCOUNT -> accessor = openAccountAccessor;
+            case PaymentsApi.CMD_CLOSE_ACCOUNT -> accessor = closeAccountAccessor;
+            case Revelator.MSG_TYPE_TEST_CONTROL -> accessor = testControlCmdAccessor;
+            default -> throw new IllegalArgumentException("Unexpected message type " + msgType);
+        }
+
         responseHandler.commandResult(
                 timestamp,
                 correlationId,
                 (int) resultsCode,
-                transferAccessor);
+                accessor);
     }
 
     private byte waitAndMergeResult(final int index,
@@ -84,10 +95,32 @@ public final class ResponsesAggregator2 implements SimpleMessageHandler {
         }
 
         return resultsBuffers[handlerIdx2].get(index);
-
     }
 
+    private final IPaymentsResponseHandler.IAdjustBalanceAccessor adjustBalanceAccessor = new IPaymentsResponseHandler.IAdjustBalanceAccessor() {
+        @Override
+        public byte getCommandType() {
+            return PaymentsApi.CMD_ADJUST;
+        }
+
+        @Override
+        public long getAccount() {
+            return requestsBuffer[lastAddr];
+        }
+
+        @Override
+        public long getAmount() {
+            return requestsBuffer[lastAddr + 1];
+        }
+    };
+
+
     private final IPaymentsResponseHandler.ITransferAccessor transferAccessor = new IPaymentsResponseHandler.ITransferAccessor() {
+        @Override
+        public byte getCommandType() {
+            return PaymentsApi.CMD_TRANSFER;
+        }
+
         @Override
         public long getAccountFrom() {
             return requestsBuffer[lastAddr];
@@ -108,5 +141,64 @@ public final class ResponsesAggregator2 implements SimpleMessageHandler {
             throw new UnsupportedOperationException();
         }
     };
+
+    private final IPaymentsResponseHandler.IOpenAccountAccessor openAccountAccessor = new IPaymentsResponseHandler.IOpenAccountAccessor() {
+        @Override
+        public byte getCommandType() {
+            return PaymentsApi.CMD_OPEN_ACCOUNT;
+        }
+
+        @Override
+        public long getAccount() {
+            return requestsBuffer[lastAddr];
+        }
+    };
+
+    private final IPaymentsResponseHandler.ICloseAccountAccessor closeAccountAccessor = new IPaymentsResponseHandler.ICloseAccountAccessor() {
+        @Override
+        public byte getCommandType() {
+            return PaymentsApi.CMD_CLOSE_ACCOUNT;
+        }
+
+        @Override
+        public long getAccount() {
+            return requestsBuffer[lastAddr];
+        }
+    };
+
+    private final IPaymentsResponseHandler.ITestControlCmdAccessor testControlCmdAccessor = new IPaymentsResponseHandler.ITestControlCmdAccessor() {
+
+        @Override
+        public byte getCommandType() {
+            return Revelator.MSG_TYPE_TEST_CONTROL;
+        }
+
+        @Override
+        public int getMsgSize() {
+            return (int) requestsBuffer[lastAddr - Revelator.MSG_HEADER_SIZE + 2];
+        }
+
+        @Override
+        public byte getMsgType() {
+            final long header1 = requestsBuffer[lastAddr - Revelator.MSG_HEADER_SIZE];
+            final int header2 = (int) (header1 >>> 56);
+            return (byte) (header2 & 0x1F);
+        }
+
+        @Override
+        public long getData(int offset) {
+            final int msgSize = getMsgSize();
+            if (offset < 0 || offset >= msgSize) {
+                throw new IllegalArgumentException("Can not request offset " + offset + " because message size is " + msgSize);
+            }
+            return requestsBuffer[lastAddr + offset];
+        }
+
+        @Override
+        public long[] getData() {
+            throw new UnsupportedOperationException(); // TODO implement
+        }
+    };
+
 
 }

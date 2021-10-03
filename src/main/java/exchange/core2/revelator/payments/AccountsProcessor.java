@@ -108,6 +108,9 @@ public final class AccountsProcessor {
     // unsafe
     public boolean withdrawal(final long account, final long amount) {
 
+//        long b = -1 - balances.get(account);
+//        log.debug("WITHDRAWAL {} raw={} bal={} amount={}", account, balances.get(account), b, amount);
+
         // decrement
         final long newBalance = balances.addToValue(account, amount);
 
@@ -125,6 +128,9 @@ public final class AccountsProcessor {
 
     // unsafe
     public boolean deposit(final long account, final long amount) {
+
+//        long b = -1 - balances.get(account);
+//        log.debug("DEPOSIT {} raw={} bal={} amount={}", account, balances.get(account), b, amount);
 
         final long newBalance = balances.addToValue(account, -amount);
 

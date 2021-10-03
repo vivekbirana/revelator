@@ -1,5 +1,6 @@
 package exchange.core2.revelator.payments;
 
+import exchange.core2.revelator.Revelator;
 import exchange.core2.revelator.buffers.LocalResultsByteBuffer;
 import exchange.core2.revelator.fences.SingleWriterFence;
 import exchange.core2.revelator.processors.pipelined.PipelinedStageHandler;
@@ -42,6 +43,7 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
     @Override
     public boolean process(final TransferSession session) {
 
+//        log.debug("ST1 t={}", session.timestamp);
 
         switch (session.messageType) {
 
@@ -50,37 +52,57 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
             }
 
             case PaymentsApi.CMD_OPEN_ACCOUNT -> {
-                return processOpenAccount(session.bufferIndex);
+                return processOpenAccount(session);
             }
 
             case PaymentsApi.CMD_CLOSE_ACCOUNT -> {
-                return processCloseAccount(session.bufferIndex);
+                return processCloseAccount(session);
             }
 
             case PaymentsApi.CMD_ADJUST -> {
-                return processAdjustment(session.bufferIndex);
+                return processAdjustment(session);
             }
+
+            case Revelator.MSG_TYPE_TEST_CONTROL, Revelator.MSG_TYPE_POISON_PILL -> {
+                resultsBuffer.set(session.bufferIndex, (byte) 42);
+                st1Fence.setRelease(session.globalOffset);
+                return true;
+            }
+
         }
 
-        return false;
+        throw new IllegalStateException("Unsupported message type " + session.messageType + " at offset " + session.globalOffset);
     }
 
-    private boolean processOpenAccount(final int index) {
+    private boolean processOpenAccount(final TransferSession session) {
 
-        final long account = requestsBuffer[index];
-        if (!accountsProcessor.accountExists(account)) {
-            accountsProcessor.openNewAccount(account);
-            resultsBuffer.set(index, (byte) 1);
-        } else {
-            resultsBuffer.set(index, (byte) -1);
+        final long account = requestsBuffer[session.bufferIndex];
+
+        if ((account & handlersMask) != handlerIndex) {
+            return true;
         }
+
+        if (!accountsProcessor.accountExists(account)) {
+//            log.debug("Opening account {}", account);
+            accountsProcessor.openNewAccount(account);
+            resultsBuffer.set(session.bufferIndex, (byte) 1);
+        } else {
+
+            log.warn("Account {} already exists!", account);
+            resultsBuffer.set(session.bufferIndex, (byte) -1);
+        }
+        st1Fence.setRelease(session.globalOffset);
 
         return true;
     }
 
-    private boolean processCloseAccount(final int index) {
+    private boolean processCloseAccount(final TransferSession session) {
 
-        final long account = requestsBuffer[index];
+        final long account = requestsBuffer[session.bufferIndex];
+
+        if ((account & handlersMask) != handlerIndex) {
+            return true;
+        }
 
         if (lockedAccounts.contains(account)) {
             // can not progress if possible rollback is expected for this account
@@ -90,28 +112,36 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
         if (!accountsProcessor.accountExists(account)) {
             // account already closed
-            resultsBuffer.set(index, (byte) 2);
+            resultsBuffer.set(session.bufferIndex, (byte) 2);
+            st1Fence.setRelease(session.globalOffset);
             return true;
         }
 
         if (!accountsProcessor.accountHasZeroBalance(account)) {
             // account balance is not zero
-            resultsBuffer.set(index, (byte) -1);
+            resultsBuffer.set(session.bufferIndex, (byte) -1);
+            st1Fence.setRelease(session.globalOffset);
             return true;
         }
 
         // can close account
         accountsProcessor.closeAccount(account);
-        resultsBuffer.set(index, (byte) 1);
+        resultsBuffer.set(session.bufferIndex, (byte) 1);
+        st1Fence.setRelease(session.globalOffset);
 
         return true;
     }
 
 
-    private boolean processAdjustment(final int index) {
+    private boolean processAdjustment(final TransferSession session) {
 
-        final long account = requestsBuffer[index];
-        final long amount = requestsBuffer[index + 1];
+        final long account = requestsBuffer[session.bufferIndex];
+
+        if ((account & handlersMask) != handlerIndex) {
+            return true;
+        }
+
+        final long amount = requestsBuffer[session.bufferIndex + 1];
 
         if (lockedAccounts.contains(account)) {
             // can not progress, because non-negative check can cause non-deterministic execution
@@ -119,8 +149,13 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
         }
 
         if (!accountsProcessor.accountExists(account)) {
-            // account is closed
-            resultsBuffer.set(index, (byte) -1);
+
+            log.warn("Account {} does not exists or closed!", account);
+
+            // account does not exists or closed
+            resultsBuffer.set(session.bufferIndex, (byte) -1);
+//            log.debug("st1Fence.setRelease({})", session.globalOffset);
+            st1Fence.setRelease(session.globalOffset);
             return true;
         }
 
@@ -128,7 +163,9 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
                 ? accountsProcessor.deposit(account, amount)
                 : accountsProcessor.withdrawal(account, -amount);
 
-        resultsBuffer.set(index, success ? (byte) 1 : -1);
+        resultsBuffer.set(session.bufferIndex, success ? (byte) 1 : -1);
+//        log.debug("st1Fence.setRelease({})", session.globalOffset);
+        st1Fence.setRelease(session.globalOffset);
         return true;
     }
 
@@ -178,8 +215,6 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
             session.revertAmount = amount;
             success = accountsProcessor.withdrawal(accountSrc, amount);
 
-            st1Fence.setRelease(session.globalOffset);
-
         } else {
 
             if (!lockedAccounts.add(accountDst)) {
@@ -190,14 +225,18 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
             session.revertAmount = amount;
             success = accountsProcessor.deposit(accountDst, amount);
-
-            st1Fence.setRelease(session.globalOffset);
         }
 
         session.accountSrc = accountSrc;
         session.accountDst = accountDst;
 
+        if (!success) {
+            log.warn("Can not process transfer {}->{}! (process {}->{})", accountSrc, accountDst, session.processSrc, session.processDst);
+        }
+
         resultsBuffer.set(session.bufferIndex, success ? (byte) 1 : -1);
+
+        st1Fence.setRelease(session.globalOffset);
 
         return true;
     }

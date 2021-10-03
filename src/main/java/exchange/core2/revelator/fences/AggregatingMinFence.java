@@ -8,6 +8,7 @@ public final class AggregatingMinFence implements IFence {
     public AggregatingMinFence(IFence[] fences) {
         this.fences = fences;
     }
+
     public AggregatingMinFence(List<IFence> fences) {
         this.fences = fences.toArray(IFence[]::new);
     }
@@ -28,6 +29,30 @@ public final class AggregatingMinFence implements IFence {
                 // no need to check remaining fences - no progress can be made anyway
                 return seq;
             }
+            min = Math.min(min, seq);
+        }
+
+        return min;
+    }
+
+    @Override
+    public long getVolatile() {
+        long min = Long.MAX_VALUE;
+
+        for (final IFence fence : fences) {
+            final long seq = fence.getVolatile();
+            min = Math.min(min, seq);
+        }
+
+        return min;
+    }
+
+    @Override
+    public long getOpaque() {
+        long min = Long.MAX_VALUE;
+
+        for (final IFence fence : fences) {
+            final long seq = fence.getOpaque();
             min = Math.min(min, seq);
         }
 

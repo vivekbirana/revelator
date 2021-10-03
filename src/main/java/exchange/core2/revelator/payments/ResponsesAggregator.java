@@ -45,6 +45,11 @@ public final class ResponsesAggregator implements SimpleMessageHandler {
 
     private final IPaymentsResponseHandler.ITransferAccessor transferAccessor = new IPaymentsResponseHandler.ITransferAccessor() {
         @Override
+        public byte getCommandType() {
+            return PaymentsApi.CMD_TRANSFER;
+        }
+
+        @Override
         public long getAccountFrom() {
             return lastBuf[lastAddr];
         }

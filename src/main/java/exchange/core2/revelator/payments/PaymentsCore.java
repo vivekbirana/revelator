@@ -128,6 +128,8 @@ public final class PaymentsCore {
                     new AggregatingMinFence(transferReleasingFences),
                     config);
 
+            processors.add(resultsProcessor);
+
             return new IFlowProcessorsFactory.ProcessorsChain(
                     processors,
                     resultsProcessor.getReleasingFence());

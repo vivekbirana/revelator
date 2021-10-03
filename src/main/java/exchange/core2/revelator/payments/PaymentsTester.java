@@ -2,10 +2,12 @@ package exchange.core2.revelator.payments;
 
 import exchange.core2.benchmarks.generator.clients.ClientsCurrencyAccountsGenerator;
 import exchange.core2.benchmarks.generator.currencies.CurrenciesGenerator;
+import exchange.core2.revelator.Revelator;
 import exchange.core2.revelator.utils.LatencyTools;
 import org.HdrHistogram.Histogram;
 import org.HdrHistogram.SingleWriterRecorder;
 import org.apache.commons.lang3.mutable.MutableInt;
+import org.apache.commons.lang3.mutable.MutableLong;
 import org.eclipse.collections.impl.map.mutable.primitive.IntLongHashMap;
 import org.eclipse.collections.impl.map.mutable.primitive.LongLongHashMap;
 import org.slf4j.Logger;
@@ -14,15 +16,13 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.locks.LockSupport;
 
 public final class PaymentsTester {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentsTester.class);
 
-    private static final long SET_REFERENCE_TIME_CORRELATION_ID = (1L << 56) - 2;
-    private static final long END_BATCH_CORRELATION_ID = (1L << 56) - 1;
-    private static final long END_ADJUSTMENTS_CORRELATION_ID = (1L << 56) - 3;
+    private static final long SET_REFERENCE_TIME_CODE = 8121092016521817263L;
+    private static final long END_BATCH_CODE = 7293651321864826354L;
 
     public static void main(String[] args) throws InterruptedException {
         PaymentsTester paymentsTester = new PaymentsTester();
@@ -34,6 +34,8 @@ public final class PaymentsTester {
 
         int seed = 1;
 
+        final MutableLong controlCorrelationCounter = new MutableLong();
+
         final Random rand = new Random(seed);
 
         final Map<Integer, Double> currencies = CurrenciesGenerator.randomCurrencies(128, 40, seed);
@@ -43,8 +45,8 @@ public final class PaymentsTester {
         final int accountsToCreate = 1_000_000;
         final int transfersToCreate = 1_000_000;
 
-//        final int accountsToCreate = 100;
-//        final int transfersToCreate = 100;
+//        final int accountsToCreate = 40;
+//        final int transfersToCreate = 40;
 
 
         final List<BitSet> clients = ClientsCurrencyAccountsGenerator.generateClients(accountsToCreate, currencies, seed);
@@ -84,7 +86,8 @@ public final class PaymentsTester {
         log.info("Creating payments core ...");
         final ResponseHandler responseHandler = new ResponseHandler(syncQueue);
 
-        final PaymentsCore paymentsCore = PaymentsCore.createSimple(responseHandler);
+//        final PaymentsCore paymentsCore = PaymentsCore.createSimple(responseHandler);
+        final PaymentsCore paymentsCore = PaymentsCore.createPipelined(responseHandler, 2);
 
         log.info("Starting payments core ...");
         paymentsCore.start();
@@ -93,17 +96,35 @@ public final class PaymentsTester {
 
         final MutableInt correlationId = new MutableInt();
 
+
+        log.info("Opening all accounts...");
+        accounts.forEach(account -> {
+            final long timestamp = System.nanoTime();
+//            log.debug("Open: {} time={}", account, timestamp);
+            paymentsApi.openAccount(timestamp, correlationId.getAndIncrement(), account);
+        });
+
+        flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, System.nanoTime(), 0L);
+
         int iteration = 0;
 
         for (int tps = 1_000_000; tps <= 10_000_000; tps += 100_000 + (rand.nextInt(10000) - 5000)) {
 
 //            log.info("Updating balances for {} accounts ...", maxBalances.size());
 
-            maxBalances.forEachKeyValue((account, amount) ->
-                    paymentsApi.adjustBalance(System.nanoTime(), correlationId.getAndIncrement(), account, amount));
+            MutableInt a = new MutableInt();
 
-            paymentsApi.adjustBalance(System.nanoTime(), END_ADJUSTMENTS_CORRELATION_ID, -1, 0);
-            syncQueue.take();
+            maxBalances.forEachKeyValue((account, amount) -> {
+//             log.debug(">>> adj {} by {}", account, amount);
+                paymentsApi.adjustBalance(System.nanoTime() + a.incrementAndGet(), correlationId.getAndIncrement(), account, amount);
+            });
+
+            paymentsApi.customQuery(Revelator.MSG_TYPE_TEST_CONTROL, System.nanoTime() + a.incrementAndGet(), controlCorrelationCounter.incrementAndGet(), 0L);
+            if (syncQueue.take() != controlCorrelationCounter.longValue()) {
+                throw new IllegalStateException();
+            }
+
+            // System.exit(1);
 
 //            log.info("Done");
 
@@ -113,7 +134,7 @@ public final class PaymentsTester {
 
 //        log.info("picosPerCmd={}", picosPerCmd);
 
-            long plannedTimestampPs = 0L; // relative timestamp in 1/1024 ns units (~1 ps)
+            long plannedTimestampPs = 10_000_000L; // relative timestamp in 1/1024 ns units (~1 ps)
             long lastKnownTimestampPs = 0L;
             int nanoTimeRequestsCounter = 0;
 
@@ -122,13 +143,8 @@ public final class PaymentsTester {
 //        log.info("startTimeNs={}", startTimeNs);
 
             // setting timer
-            paymentsApi.transfer(
-                    startTimeNs,
-                    SET_REFERENCE_TIME_CORRELATION_ID,
-                    -1,
-                    -1,
-                    0,
-                    0);
+            flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, startTimeNs, SET_REFERENCE_TIME_CODE);
+
 
             for (final TransferTestOrder order : transfers) {
 
@@ -162,8 +178,7 @@ public final class PaymentsTester {
                         order.currency);
             }
 
-            paymentsApi.adjustBalance(plannedTimestampPs, END_BATCH_CORRELATION_ID, -1, 0);
-            syncQueue.take();
+            flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, startTimeNs, END_BATCH_CODE);
 
             final float processingTimeUs = (System.nanoTime() - startTimeNs) / 1000f;
             final float perfMt = (float) transfers.size() / processingTimeUs;
@@ -175,12 +190,27 @@ public final class PaymentsTester {
             final Histogram histogram = responseHandler.hdrRecorder.getIntervalHistogram();
             final Map<String, String> latencyReportFast = LatencyTools.createLatencyReportFast(histogram);
             log.info("{} {} nanotimes={}", tag, latencyReportFast, nanoTimeRequestsCounter);
+
+//            System.exit(1);
         }
 
         paymentsCore.stop();
 
         log.info("Done");
 
+    }
+
+    private void flushAndWait(final MutableLong controlCorrelationCounter,
+                              final BlockingQueue<Long> syncQueue,
+                              final PaymentsApi paymentsApi,
+                              final long correlationId,
+                              final long data) throws InterruptedException {
+
+        paymentsApi.customQuery(Revelator.MSG_TYPE_TEST_CONTROL, correlationId, controlCorrelationCounter.incrementAndGet(), data);
+
+        if (syncQueue.take() != controlCorrelationCounter.longValue()) {
+            throw new IllegalStateException();
+        }
     }
 
     public static List<TransferTestOrder> generateTransfers(final int transfersNum,
@@ -256,39 +286,40 @@ public final class PaymentsTester {
                                   long correlationId,
                                   int resultCode,
                                   IRequestAccessor accessor) {
-            // log.debug("commandResult: {}->{}", correlationId, resultCode);
 
+//            log.debug("commandResult: t={} {}->{}", timestamp, correlationId, resultCode);
 
-            if (correlationId == END_BATCH_CORRELATION_ID) {
-                try {
-                    syncQueue.put(correlationId);
-                } catch (final InterruptedException ex) {
-                    throw new RuntimeException(ex);
-                }
-                startTimeNs = 0;
-            } else if (correlationId == SET_REFERENCE_TIME_CORRELATION_ID) {
+            if (accessor instanceof ITestControlCmdAccessor) {
+
+                final long operationCode = ((ITestControlCmdAccessor) accessor).getData(0);
+
+                if (operationCode == END_BATCH_CODE) {
+                    startTimeNs = 0;
+                } else if (operationCode == SET_REFERENCE_TIME_CODE) {
 //                log.info("received startTimeNs={}", timestamp);
-                hdrRecorder.reset();
-                startTimeNs = timestamp;
-            } else if (correlationId == END_ADJUSTMENTS_CORRELATION_ID) {
+                    hdrRecorder.reset();
+                    startTimeNs = timestamp;
+                }
+
                 try {
                     syncQueue.put(correlationId);
                 } catch (final InterruptedException ex) {
                     throw new RuntimeException(ex);
                 }
+
             } else {
 
 //                if (cx++ == 100) {
 //                    cx = 0;
 
-                    if (startTimeNs != 0) {
-                        final long nanoTime = System.nanoTime();
-                        final long latency = nanoTime - startTimeNs - (timestamp >> 10);
+                if (startTimeNs != 0) {
+                    final long nanoTime = System.nanoTime();
+                    final long latency = nanoTime - startTimeNs - (timestamp >> 10);
 
 //                    log.info("timestamp={} latency={} nanoTime={} startTimeNs={}", timestamp, latency, nanoTime, startTimeNs);
 
-                        hdrRecorder.recordValue(latency);
-                    }
+                    hdrRecorder.recordValue(latency);
+                }
 
 //                }
 

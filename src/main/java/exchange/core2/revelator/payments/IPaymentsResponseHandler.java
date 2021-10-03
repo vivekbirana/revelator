@@ -2,7 +2,6 @@ package exchange.core2.revelator.payments;
 
 public interface IPaymentsResponseHandler {
 
-
     void commandResult(long timestamp,
                        long correlationId,
                        int resultCode,
@@ -14,6 +13,20 @@ public interface IPaymentsResponseHandler {
 
     interface IRequestAccessor {
 
+        byte getCommandType();
+    }
+
+    // Todo extract framework part
+
+    interface ITestControlCmdAccessor extends IRequestAccessor {
+
+        int getMsgSize();
+
+        byte getMsgType();
+
+        long getData(int offset);
+
+        long[] getData();
     }
 
     interface ITransferAccessor extends IRequestAccessor {
@@ -34,5 +47,16 @@ public interface IPaymentsResponseHandler {
         long getAmount();
     }
 
+    interface IOpenAccountAccessor extends IRequestAccessor {
+
+        long getAccount();
+
+    }
+
+    interface ICloseAccountAccessor extends IRequestAccessor {
+
+        long getAccount();
+
+    }
 
 }

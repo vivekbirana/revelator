@@ -1,9 +1,12 @@
 package exchange.core2.revelator.processors.pipelined;
 
 
+import exchange.core2.revelator.Revelator;
 import exchange.core2.revelator.fences.IFence;
 import exchange.core2.revelator.fences.SingleWriterFence;
 import exchange.core2.revelator.processors.IFlowProcessor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.function.Supplier;
@@ -26,6 +29,8 @@ import java.util.stream.IntStream;
 public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements IFlowProcessor {
 
     private static final long WORK_TRIGGER_MAX_VALUE = Long.MAX_VALUE >> 1;
+
+    private static final Logger log = LoggerFactory.getLogger(PipelinedFlowProcessor.class);
 
     private final int numHandlers;
     private final PipelinedStageHandler<S>[] handlers;
@@ -80,13 +85,14 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
         long headSequence = -1L; // processed (last known) sequence
         long tailSequence = -1L;
 
-        // processed (last known) sequence by each handler
+        // processed (last known) sequence by each handler, starting with -1 (nothing processed)
         final long[] handlerSequence = new long[numHandlers];
         for (int i = 0; i < numHandlers; i++) handlerSequence[i] = -1;
 
-        long initializerOffset = 0L;
-        long availableOffset = 0L;
+        long initializerOffset = 0L; // session initializer global offset
+        long nextAvailableOffset;
 
+        boolean isShutdown = false;
 
         while (true) {
 
@@ -94,10 +100,17 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
             workCounter++;
 
             // gatingSequence is a barrier to protect sessions queue from wrapping:
-            long gatingSequence = handlerSequence[numHandlers - 1] + PIPELINE_SIZE;
+            final long gatingSequence = headSequence + PIPELINE_SIZE;
 
-            // check for new messages or init new sessions only if there some space in the pipeline
-            if (tailSequence != gatingSequence) {
+//            log.info("------- new cycle, tailSequence={} headSequence={} gatingSequence={} ", tailSequence, headSequence, gatingSequence);
+
+            if (isShutdown && (tailSequence == headSequence)) {
+                log.info("All sessions processed, processor stopped");
+                return;
+            }
+
+            // check for new messages or init new sessions only if there free space in the cyclic sessions buffer
+            if (tailSequence < gatingSequence) {
 
                 // try to wait for incomingFence if it is time for that
                 // availableOffset will become larger than initializerOffset if new messages arrived
@@ -107,15 +120,19 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
                 // otherwise spin on fence volatile read
                 //do {
                 //  workCounter++;
-                availableOffset = inboundFence.getAcquire(availableOffset);
+                nextAvailableOffset = inboundFence.getAcquire(Long.MIN_VALUE);
                 //Thread.onSpinWait();
                 //} while (availableOffset <= initializerOffset);
 
                 // set to known head offset
 //                }
 
+//                log.debug("initializerOffset={} nextAvailableOffset={}", initializerOffset, nextAvailableOffset);
+
                 // parse new messages if there are some
-                while (initializerOffset < availableOffset) {
+                while (initializerOffset < nextAvailableOffset) {
+
+//                    log.debug("NEW SESSION: initializerOffset={} nextAvailableOffset={}", initializerOffset, nextAvailableOffset);
 
 //            log.debug("reading at index={} ({}<{})",(int) (positionSeq & indexMask), positionSeq , availableSeq);
 
@@ -123,45 +140,92 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
                     final long header1 = buffer[index];
 
+//                    log.debug("header1 = {}", header1);
+
                     if (header1 == 0L) {
                         // empty message - skip until end of the buffer
                         initializerOffset = (initializerOffset | indexMask) + 1;
+//                        log.debug("empty message - skip until end of the buffer");
                         continue;
                     }
 
                     tailSequence++;
 
-                    final S session = sessions[(int) tailSequence & pipelineMask];
+//                    log.debug("tailSequence={}", tailSequence);
 
-                    session.globalOffset = initializerOffset;
-                    session.bufferIndex = index;
+                    final int sessionIdx = (int) tailSequence & pipelineMask;
+
+//                    log.debug("sessionIdx={}", sessionIdx);
+                    final S session = sessions[sessionIdx];
+
+                    session.bufferIndex = index + Revelator.MSG_HEADER_SIZE;
                     session.correlationId = header1 & 0x00FF_FFFF_FFFF_FFFFL;
 
                     final int header2 = (int) (header1 >>> 56);
-                    session.messageType = (byte) (header2 & 0x7);
+
+//                    log.debug("header2={}", header2);
+                    session.messageType = (byte) (header2 & 0x1F);
+
+//                    log.debug("session.messageType={}", session.messageType);
 
                     // TODO throw shutdown signal exception
 
                     session.timestamp = buffer[index + 1];
-                    session.payloadSize = (int) buffer[index + 2] << 3;
+
+//                    log.debug("session.timestamp={}", session.timestamp);
+
+                    final long payloadSize = buffer[index + 2];
+                    session.payloadSize = (int) payloadSize;
+
+                    session.globalOffset = initializerOffset + payloadSize + Revelator.MSG_HEADER_SIZE;
+//                    log.debug("initializerOffset={} -> globalOffset={}", initializerOffset, session.globalOffset);
+
+
+                    initializerOffset += Revelator.MSG_HEADER_SIZE + session.payloadSize;
 
                     if (tailSequence == gatingSequence) {
+//                        log.info("gatingSequence reached = {}", gatingSequence);
+
+                        break;
+                    }
+
+                    if (session.messageType == Revelator.MSG_TYPE_POISON_PILL) {
+
+                        log.info("Shutdown signal received, processing all remaining sessions...");
+                        isShutdown = true;
                         break;
                     }
 
                 }
+            } else {
+//                log.debug("Skip:  space in the cyclic sessions buffer");
             }
+
+//            if(headSequence == tailSequence){
+//                // nothing to process
+//                continue;
+//            }
+
+//            log.info("---------- PROCESSING BETWEEN tailSequence={} and headSequence={} --------", tailSequence, headSequence);
 
             // handlers cycle - each handler processed once
             // handler skip if was unsuccessfully processed recently (don't spin, do another work instead)
+
+            // starting from head of sessions queue
             long prevHandlerSequence = tailSequence;
+
             for (int handlerIdx = 0; handlerIdx < numHandlers; handlerIdx++) {
 
                 long sequence = handlerSequence[handlerIdx];
 
+//                log.debug("handler{}seq={} prevHandlerSequence={}", handlerIdx, sequence, prevHandlerSequence);
+
+
                 // never can go in front of previous handler
                 // first handler has 'tailSequence' as a barrier, meaning it can only process messages with session
-                if (sequence <= prevHandlerSequence) {
+                if (sequence < prevHandlerSequence) {
+
+//                    log.debug("processing handler {}, workCounter={} handlerWorkTriggers[{}]={}", handlerIdx, workCounter, handlerIdx, handlerWorkTriggers[handlerIdx]);
 
                     // check if it is time to process
                     if (workCounter >= handlerWorkTriggers[handlerIdx]) {
@@ -172,8 +236,14 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
                         sequence++;
                         // extract next message session and try to process it
-                        final S session = sessions[(int) (sequence) & pipelineMask];
+                        final int sessionIdx = (int) (sequence) & pipelineMask;
+
+                        final S session = sessions[sessionIdx];
+//                        log.debug("sessionIdx={} go={} t={}", sessionIdx, session.globalOffset, session.timestamp);
+
                         final boolean success = handlers[handlerIdx].process(session);
+
+//                        log.debug("success={}", success);
 
                         if (success) {
                             // successful processing - move sequence forward and update it
@@ -199,6 +269,12 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
                 prevHandlerSequence = sequence;
             }
+
+            // updating tail (processed by last handler)
+            headSequence = prevHandlerSequence;
+
+//            log.debug("headSequence updated to {}", headSequence);
+
 
             // work counters wrapping protection
 //            if (workCounter > WORK_TRIGGER_MAX_VALUE) {

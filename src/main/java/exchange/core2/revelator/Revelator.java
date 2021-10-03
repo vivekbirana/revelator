@@ -20,6 +20,7 @@ public final class Revelator implements AutoCloseable {
 
     public static final int MSG_HEADER_SIZE = 3;
     public static final byte MSG_TYPE_POISON_PILL = 31;
+    public static final byte MSG_TYPE_TEST_CONTROL = 30;
 
     private final int bufferSize;
     private final int indexMask;

@@ -36,6 +36,8 @@ public final class PaymentsHandlerStage2 implements PipelinedStageHandler<Transf
     @Override
     public boolean process(final TransferSession session) {
 
+//        log.debug("ST2 t={}", session.timestamp);
+
         switch (session.messageType) {
 
             // only transfer command can possibly require post-processing
@@ -75,7 +77,7 @@ public final class PaymentsHandlerStage2 implements PipelinedStageHandler<Transf
         // check Stage 1 progress for particular handler
         final IFence fence = fencesSt1[otherIdx];
         final long progress = fence.getAcquire(-1L);// ignore
-        if (progress < session.globalOffset) { // TODO or <= ??
+        if (progress < session.globalOffset) { // TODO intorduce static method (to make it easy to understand)
             // Stage 1 is not completed yet by other handler - can not progress
             return false;
         }
