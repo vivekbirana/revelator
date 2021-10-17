@@ -3,9 +3,13 @@ package exchange.core2.revelator.payments;
 import exchange.core2.benchmarks.generator.clients.ClientsCurrencyAccountsGenerator;
 import exchange.core2.benchmarks.generator.currencies.CurrenciesGenerator;
 import exchange.core2.revelator.Revelator;
+import exchange.core2.revelator.utils.AffinityThreadFactory;
 import exchange.core2.revelator.utils.LatencyTools;
+import net.openhft.affinity.Affinity;
+import net.openhft.affinity.AffinityLock;
 import org.HdrHistogram.Histogram;
 import org.HdrHistogram.SingleWriterRecorder;
+import org.agrona.collections.Hashing;
 import org.apache.commons.lang3.mutable.MutableInt;
 import org.apache.commons.lang3.mutable.MutableLong;
 import org.eclipse.collections.impl.map.mutable.primitive.IntLongHashMap;
@@ -16,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.stream.Stream;
 
 public final class PaymentsTester {
 
@@ -23,6 +28,7 @@ public final class PaymentsTester {
 
     private static final long SET_REFERENCE_TIME_CODE = 8121092016521817263L;
     private static final long END_BATCH_CODE = 7293651321864826354L;
+    private static final long DUMP_STAT = 1073923874826736264L;
 
     public static void main(String[] args) throws InterruptedException {
         PaymentsTester paymentsTester = new PaymentsTester();
@@ -38,56 +44,38 @@ public final class PaymentsTester {
 
         final Random rand = new Random(seed);
 
-        final Map<Integer, Double> currencies = CurrenciesGenerator.randomCurrencies(128, 40, seed);
+        final Map<Integer, Double> currencies = CurrenciesGenerator.randomCurrencies(30, 1, seed);
 
         log.info("Currencies: {}", currencies);
 
-        final int accountsToCreate = 1_000_000;
+        final int accountsToCreate = 10_000_000;
         final int transfersToCreate = 1_000_000;
+        final int iterations = 10;
 
 //        final int accountsToCreate = 40;
 //        final int transfersToCreate = 40;
 
+        log.info("Creating {} accounts ...", accountsToCreate);
+//        final List<BitSet> clients = ClientsCurrencyAccountsGenerator.generateClients(accountsToCreate, currencies, seed);
+        final long[] accounts = ClientsCurrencyAccountsGenerator.generateAccountsForTransfers(accountsToCreate, currencies, PaymentsTester::mapToAccount, 40, seed);
 
-        final List<BitSet> clients = ClientsCurrencyAccountsGenerator.generateClients(accountsToCreate, currencies, seed);
-
-        final List<Long> accounts = new ArrayList<>(accountsToCreate);
-
-        for (int i = 0; i < clients.size(); i++) {
-
-            final BitSet accountCurrencyIds = clients.get(i);
-            final int clientId = i;
-            final MutableInt accountNumCounter = new MutableInt(0);
-
-            accountCurrencyIds.stream().forEach(currencyId -> {
-                final int accountNum = accountNumCounter.getAndIncrement();
-                long account = mapToAccount(clientId, currencyId, accountNum);
-//                log.info("{}/{}/{} : {}", clientId, currencyId, accountNum, account);
-                accounts.add(account);
-            });
-        }
-
-        log.info("Generated {} accounts", accounts.size());
-
-        final List<TransferTestOrder> transfers = generateTransfers(transfersToCreate, accounts, seed);
-
-//        transfers.forEach(tx -> log.debug("TR: {}", tx));
-
-        log.info("Generated {} transfers", transfers.size());
-
-        final LongLongHashMap maxBalances = createMaxBalances(transfers);
-
-        log.info("Generated {} maxBalances", maxBalances.size());
-
-//        maxBalances.forEachKeyValue((acc, maxbal) -> log.debug("MAX-BAL: {}={}", acc, maxbal));
+        log.info("Generated {} accounts", accounts.length);
 
         final BlockingQueue<Long> syncQueue = new LinkedBlockingQueue<>(1);
 
         log.info("Creating payments core ...");
         final ResponseHandler responseHandler = new ResponseHandler(syncQueue);
 
-//        final PaymentsCore paymentsCore = PaymentsCore.createSimple(responseHandler);
-        final PaymentsCore paymentsCore = PaymentsCore.createPipelined(responseHandler, 2);
+//        AffinityThreadFactory.ThreadAffinityMode affinityMode = AffinityThreadFactory.ThreadAffinityMode.AFFINITY_PHYSICAL_CORE;
+        AffinityThreadFactory.ThreadAffinityMode affinityMode = AffinityThreadFactory.ThreadAffinityMode.AFFINITY_LOGICAL_CORE;
+        final AffinityThreadFactory threadFactory = new AffinityThreadFactory(affinityMode);
+
+//        final PaymentsCore paymentsCore = PaymentsCore.createSimple(responseHandler, threadFactory);
+
+        final int processingThreadsNum = 8;
+        final PaymentsCore paymentsCore = PaymentsCore.createPipelined(responseHandler, threadFactory, processingThreadsNum);
+//        final PaymentsCore paymentsCore = PaymentsCore.createParallel(responseHandler, threadFactory, processingThreadsNum);
+        log.info("Configuration {} threads {}", processingThreadsNum, affinityMode);
 
         log.info("Starting payments core ...");
         paymentsCore.start();
@@ -97,101 +85,132 @@ public final class PaymentsTester {
         final MutableInt correlationId = new MutableInt();
 
 
-        log.info("Opening all accounts...");
-        accounts.forEach(account -> {
-            final long timestamp = System.nanoTime();
-//            log.debug("Open: {} time={}", account, timestamp);
-            paymentsApi.openAccount(timestamp, correlationId.getAndIncrement(), account);
-        });
+        log.info("Generating {}*{} transfers ...", iterations, transfersToCreate);
 
-        flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, System.nanoTime(), 0L);
+        try (AffinityLock lock = Affinity.acquireCore()) {
 
-        int iteration = 0;
+            final List<List<TransferTestOrder>> allTransfers = new ArrayList<>();
+            for (int iteration = 0; iteration < iterations; iteration++) {
 
-        for (int tps = 1_000_000; tps <= 10_000_000; tps += 100_000 + (rand.nextInt(10000) - 5000)) {
+                final int iterationSeed = Hashing.hash(seed + iteration);
 
-//            log.info("Updating balances for {} accounts ...", maxBalances.size());
+                final List<TransferTestOrder> transfers = generateTransfers(transfersToCreate, accounts, iterationSeed);
 
-            MutableInt a = new MutableInt();
+                allTransfers.add(transfers);
 
-            maxBalances.forEachKeyValue((account, amount) -> {
-//             log.debug(">>> adj {} by {}", account, amount);
-                paymentsApi.adjustBalance(System.nanoTime() + a.incrementAndGet(), correlationId.getAndIncrement(), account, amount);
-            });
+//        transfers.forEach(tx -> log.debug("TR: {}", tx));
 
-            paymentsApi.customQuery(Revelator.MSG_TYPE_TEST_CONTROL, System.nanoTime() + a.incrementAndGet(), controlCorrelationCounter.incrementAndGet(), 0L);
-            if (syncQueue.take() != controlCorrelationCounter.longValue()) {
-                throw new IllegalStateException();
+//            log.info("Generated {} transfers (seed={})", transfers.size(), seed + iteration);
             }
 
-            // System.exit(1);
+            log.info("Generating  maxBalances....");
+
+            final LongLongHashMap maxBalances = createMaxBalances(allTransfers.stream().flatMap(Collection::stream));
+
+//            log.info("Generated {} maxBalances", maxBalances.size());
+
+//        maxBalances.forEachKeyValue((acc, maxbal) -> log.debug("MAX-BAL: {}={}", acc, maxbal));
+
+            log.info("Opening {} accounts with {} positive balances...", accounts.length, maxBalances.size());
+
+            for (final long account : accounts) {
+                paymentsApi.openAccount(System.nanoTime(), correlationId.getAndIncrement(), account);
+                final long amount = maxBalances.get(account);
+                if (amount > 0) {
+                    paymentsApi.adjustBalance(System.nanoTime(), correlationId.getAndIncrement(), account, amount);
+                }
+            }
+
+            flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, System.nanoTime(), 0L);
+
+//        paymentsApi.customQuery(Revelator.MSG_TYPE_TEST_CONTROL, System.nanoTime(), controlCorrelationCounter.incrementAndGet(), 0L);
+//        if (syncQueue.take() != controlCorrelationCounter.longValue()) {
+//            throw new IllegalStateException();
+//        }
+
+            log.info("Accounts created, starting benchmark...");
+
+            int transferSetIdx = 0;
+
+            for (int tps = 800_000; tps <= 8_000_000; tps += 100_000 + (rand.nextInt(4000) - 2000)) {
+
+//            log.info("Adjusted {} accounts", maxBalances.size());
+
+                if (transferSetIdx == allTransfers.size()) {
+                    transferSetIdx = 0;
+                    log.info("Updating {} balances...", maxBalances.size());
+                    maxBalances.forEachKeyValue((account, amount) -> paymentsApi.adjustBalance(System.nanoTime(), correlationId.getAndIncrement(), account, amount));
+                    flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, System.nanoTime(), 0L);
+                }
+
+                // System.exit(1);
 
 //            log.info("Done");
 
 //            log.info("Performing {} transfers ...", transfers.size());
 
-            final long picosPerCmd = (1024L * 1_000_000_000L) / tps;
+                final long picosPerCmd = (1024L * 1_000_000_000L) / tps;
 
 //        log.info("picosPerCmd={}", picosPerCmd);
 
-            long plannedTimestampPs = 10_000_000L; // relative timestamp in 1/1024 ns units (~1 ps)
-            long lastKnownTimestampPs = 0L;
-            int nanoTimeRequestsCounter = 0;
+                long plannedTimestampPs = 10_000_000L; // relative timestamp in 1/1024 ns units (~1 ps)
+                long lastKnownTimestampPs = 0L;
+                int nanoTimeRequestsCounter = 0;
 
-            final long startTimeNs = System.nanoTime();
+                final long startTimeNs = System.nanoTime();
+                // setting timer
+                flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, startTimeNs, SET_REFERENCE_TIME_CODE);
 
-//        log.info("startTimeNs={}", startTimeNs);
+                final List<TransferTestOrder> transfers = allTransfers.get(transferSetIdx);
+                for (final TransferTestOrder order : transfers) {
 
-            // setting timer
-            flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, startTimeNs, SET_REFERENCE_TIME_CODE);
+                    plannedTimestampPs += picosPerCmd;
 
+                    while (plannedTimestampPs > lastKnownTimestampPs) {
 
-            for (final TransferTestOrder order : transfers) {
+                        lastKnownTimestampPs = (System.nanoTime() - startTimeNs) << 10;
 
-                plannedTimestampPs += picosPerCmd;
+                        nanoTimeRequestsCounter++;
 
-                while (plannedTimestampPs > lastKnownTimestampPs) {
+                        if (plannedTimestampPs > lastKnownTimestampPs) {
 
-                    lastKnownTimestampPs = (System.nanoTime() - startTimeNs) << 10;
-
-                    nanoTimeRequestsCounter++;
-
-                    if (plannedTimestampPs > lastKnownTimestampPs) {
-
-                        // spin until its time to send next command
-                        Thread.onSpinWait();
+                            // spin until its time to send next command
+                            Thread.onSpinWait();
 //                        Thread.yield();
 //                        LockSupport.parkNanos(1);
+                        }
                     }
-                }
 
 //            log.info("plannedTimestampPs={}", plannedTimestampPs);
 
 
-                // TODO send batches (to benchmark processing + handler part)
-                paymentsApi.transfer(
-                        plannedTimestampPs,
-                        correlationId.getAndIncrement(),
-                        order.sourceAccount,
-                        order.destinationAccount,
-                        order.amount,
-                        order.currency);
+                    // TODO send batches (to benchmark processing + handler part)
+                    paymentsApi.transfer(
+                            plannedTimestampPs,
+                            correlationId.getAndIncrement(),
+                            order.sourceAccount,
+                            order.destinationAccount,
+                            order.amount,
+                            order.currency);
+                }
+
+                flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, startTimeNs, END_BATCH_CODE);
+
+                final float processingTimeUs = (System.nanoTime() - startTimeNs) / 1000f;
+                final float perfMt = (float) transfers.size() / processingTimeUs;
+                final float targetMt = (float) tps / 1_000_000.0f;
+                final String tag = String.format("%.2fns %.3f -> %.3f MT/s %.0f%%",
+                        picosPerCmd / 1024.0, targetMt, perfMt, perfMt / targetMt * 100.0);
+
+
+                final Histogram histogram = responseHandler.hdrRecorder.getIntervalHistogram();
+                final Map<String, String> latencyReportFast = LatencyTools.createLatencyReportFast(histogram);
+                log.info("{} {} nanotimes={} tsidx={}", tag, latencyReportFast, nanoTimeRequestsCounter, transferSetIdx);
+
+                flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, startTimeNs, DUMP_STAT);
+
+                transferSetIdx++;
             }
-
-            flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, startTimeNs, END_BATCH_CODE);
-
-            final float processingTimeUs = (System.nanoTime() - startTimeNs) / 1000f;
-            final float perfMt = (float) transfers.size() / processingTimeUs;
-            final float targetMt = (float) tps / 1_000_000.0f;
-            final String tag = String.format("%.2fns %.3f -> %.3f MT/s %.0f%%",
-                    picosPerCmd / 1024.0, targetMt, perfMt, perfMt / targetMt * 100.0);
-
-
-            final Histogram histogram = responseHandler.hdrRecorder.getIntervalHistogram();
-            final Map<String, String> latencyReportFast = LatencyTools.createLatencyReportFast(histogram);
-            log.info("{} {} nanotimes={}", tag, latencyReportFast, nanoTimeRequestsCounter);
-
-//            System.exit(1);
         }
 
         paymentsCore.stop();
@@ -214,24 +233,23 @@ public final class PaymentsTester {
     }
 
     public static List<TransferTestOrder> generateTransfers(final int transfersNum,
-                                                            final List<Long> accounts,
+                                                            final long[] accounts,
                                                             final int seed) {
 
         final List<TransferTestOrder> transfersList = new ArrayList<>();
 
-        final int accountsNum = accounts.size();
         final Random random = new Random(seed);
 
         for (int i = 0; i < transfersNum; i++) {
-            final int idxFrom = random.nextInt(accountsNum);
-            final int idxToRaw = random.nextInt(accountsNum - 1);
+            final int idxFrom = random.nextInt(accounts.length);
+            final int idxToRaw = random.nextInt(accounts.length - 1);
             final int idxTo = idxToRaw < idxFrom ? idxToRaw : idxToRaw + 1;
 
             final long amount = random.nextInt(100_000) + 10;
 
-            final long sourceAccount = accounts.get(idxFrom);
+            final long sourceAccount = accounts[idxFrom];
 
-            final long destinationAccount = accounts.get(idxTo);
+            final long destinationAccount = accounts[idxTo];
             final int currency = extractCurrency(sourceAccount);
 
             transfersList.add(new TransferTestOrder(sourceAccount, destinationAccount, amount, currency));
@@ -241,7 +259,7 @@ public final class PaymentsTester {
     }
 
 
-    public static LongLongHashMap createMaxBalances(List<TransferTestOrder> transfers) {
+    public static LongLongHashMap createMaxBalances(Stream<TransferTestOrder> transfers) {
         final LongLongHashMap balances = new LongLongHashMap();
 
         transfers.forEach(tx -> {
@@ -374,7 +392,7 @@ public final class PaymentsTester {
 
     private static long mapToAccount(long clientId, int currencyId, int accountNum) {
 
-        if (clientId > 0x7F_FFFF_FFFFL) {
+        if (clientId > 0x7_FFFF_FFFFL) {
             throw new IllegalArgumentException("clientId is too big");
         }
 
@@ -386,12 +404,15 @@ public final class PaymentsTester {
             throw new IllegalArgumentException("accountNum is too big");
         }
 
-        return (clientId << 24) | ((long) currencyId << 8) | accountNum;
+        final long accountRaw = (clientId << 28) | ((long) currencyId << 12) | ((long) accountNum << 4);
+        final int checkDigit = Hashing.hash(accountRaw) & 0xF;
+//        log.debug("{} {} {} -> {} + CD={} -> {}", clientId, currencyId, accountNum, accountRaw, checkDigit, accountRaw | checkDigit);
+        return accountRaw | checkDigit;
     }
 
     private static int extractCurrency(long accountId) {
 
-        return (int) (accountId >> 8) & 0xFFFF;
+        return (int) (accountId >> 12) & 0xFFFF;
 
     }
 

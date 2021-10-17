@@ -25,7 +25,7 @@ public final class AffinityThreadFactory implements ThreadFactory {
 
         // log.info("---- Requesting thread for {}", runnable);
 
-        if (threadAffinityMode == ThreadAffinityMode.THREAD_AFFINITY_DISABLE) {
+        if (threadAffinityMode == ThreadAffinityMode.NO_AFFINITY) {
             return Executors.defaultThreadFactory().newThread(runnable);
         }
 
@@ -42,22 +42,22 @@ public final class AffinityThreadFactory implements ThreadFactory {
             final String newName = String.format("%s-cpu%d", thread.getName(), lock.cpuId());
             thread.setName(newName);
 
-            log.debug("{} will be running on thread={} pinned to cpu {}", runnable, newName, lock.cpuId());
+            log.debug("{} will be running on thread={} pinned to cpu {} ({})", runnable, newName, lock.cpuId(), threadAffinityMode);
 
             runnable.run();
         }
     }
 
     private synchronized AffinityLock getAffinityLockSync() {
-        return threadAffinityMode == ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_PHYSICAL_CORE
+        return threadAffinityMode == ThreadAffinityMode.AFFINITY_PHYSICAL_CORE
                 ? AffinityLock.acquireCore()
                 : AffinityLock.acquireLock();
     }
 
     public enum ThreadAffinityMode {
-        THREAD_AFFINITY_ENABLE_PER_PHYSICAL_CORE,
-        THREAD_AFFINITY_ENABLE_PER_LOGICAL_CORE,
-        THREAD_AFFINITY_DISABLE
+        AFFINITY_PHYSICAL_CORE,
+        AFFINITY_LOGICAL_CORE,
+        NO_AFFINITY
     }
 
 }

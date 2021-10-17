@@ -5,9 +5,12 @@ import exchange.core2.revelator.buffers.LocalResultsByteBuffer;
 import exchange.core2.revelator.fences.IFence;
 import exchange.core2.revelator.processors.simple.SimpleMessageHandler;
 import jdk.internal.vm.annotation.Contended;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-public final class ResponsesAggregator2 implements SimpleMessageHandler {
+public final class ResponsesSmartAggregator implements SimpleMessageHandler {
 
+    private static final Logger log = LoggerFactory.getLogger(ResponsesSmartAggregator.class);
 
     private final LocalResultsByteBuffer[] resultsBuffers;
     private final IFence[] fencesSt1;
@@ -19,17 +22,32 @@ public final class ResponsesAggregator2 implements SimpleMessageHandler {
     @Contended
     private int lastAddr;
 
-    public ResponsesAggregator2(LocalResultsByteBuffer[] resultsBuffers,
-                                IFence[] fencesSt1,
-                                long handlersMask,
-                                IPaymentsResponseHandler responseHandler,
-                                long[] requestsBuffer) {
+    @Contended
+    private int spinsCounter1 = 0;
+
+    @Contended
+    private int spinsCounter2 = 0;
+
+    @Contended
+    private int hit1Counter = 0;
+    @Contended
+    private int hit2Counter = 0;
+
+    @Contended
+    private final long[] fencesCache;
+
+    public ResponsesSmartAggregator(LocalResultsByteBuffer[] resultsBuffers,
+                                    IFence[] fencesSt1,
+                                    long handlersMask,
+                                    IPaymentsResponseHandler responseHandler,
+                                    long[] requestsBuffer) {
 
         this.resultsBuffers = resultsBuffers;
         this.fencesSt1 = fencesSt1;
         this.responseHandler = responseHandler;
         this.handlersMask = handlersMask;
         this.requestsBuffer = requestsBuffer;
+        this.fencesCache = new long[fencesSt1.length];
     }
 
     @Override
@@ -41,6 +59,7 @@ public final class ResponsesAggregator2 implements SimpleMessageHandler {
                               final long correlationId,
                               final byte msgType) {
 
+        // TODO incorrect wait logic for MSG_TYPE_TEST_CONTROL
         final long resultsCode = waitAndMergeResult(index, globalOffset, msgType);
 
         this.lastAddr = index;
@@ -55,6 +74,17 @@ public final class ResponsesAggregator2 implements SimpleMessageHandler {
             default -> throw new IllegalArgumentException("Unexpected message type " + msgType);
         }
 
+        if (msgType == Revelator.MSG_TYPE_TEST_CONTROL) {
+            final long data = requestsBuffer[index];
+            if (data == 1073923874826736264L) {
+                // log.debug("AGGREGATOR STAT: c1={} c2={} hit1={} hit2={}", spinsCounter1, spinsCounter2, hit1Counter, hit2Counter);
+                spinsCounter1 = 0;
+                spinsCounter2 = 0;
+                hit1Counter = 0;
+                hit2Counter = 0;
+            }
+        }
+
         responseHandler.commandResult(
                 timestamp,
                 correlationId,
@@ -66,14 +96,23 @@ public final class ResponsesAggregator2 implements SimpleMessageHandler {
                                     final long globalOffset,
                                     final byte msgType) {
 
-        final int handlerIdx1 = (int) (requestsBuffer[index] & handlersMask);
+        final long account1 = requestsBuffer[index]; // account - always first field
+        final int handlerIdx1 = (int) (account1 & handlersMask);
 
-        // wait for first fence
-        final IFence fence1 = fencesSt1[handlerIdx1];
-        while (fence1.getAcquire(0) < globalOffset) {
-            Thread.onSpinWait();
+        // TODO introduce CachingFencesArray class
+        if (fencesCache[handlerIdx1] < globalOffset) {
+            // wait for first fence
+            final IFence fence1 = fencesSt1[handlerIdx1];
+            long availableOffset;
+            while ((availableOffset = fence1.getAcquire(0)) < globalOffset) {
+                Thread.onSpinWait();
+//            Thread.yield();
+                spinsCounter1++;
+            }
+            fencesCache[handlerIdx1] = availableOffset;
+        } else {
+            hit1Counter++;
         }
-
         final byte result1 = resultsBuffers[handlerIdx1].get(index);
         if (msgType != PaymentsApi.CMD_TRANSFER) {
             return result1;
@@ -83,15 +122,24 @@ public final class ResponsesAggregator2 implements SimpleMessageHandler {
             return result1;
         }
 
-        final int handlerIdx2 = (int) (requestsBuffer[index + 1] & handlersMask);
+        final long dstAccount = requestsBuffer[index + 1];
+        final int handlerIdx2 = (int) (dstAccount & handlersMask);
         if (handlerIdx2 == handlerIdx1) {
             return result1;
         }
 
-        // wait for second account fence
-        final IFence fence2 = fencesSt1[handlerIdx2];
-        while (fence2.getAcquire(0) < globalOffset) {
-            Thread.onSpinWait();
+        if (fencesCache[handlerIdx2] < globalOffset) {
+            // wait for second account fence
+            final IFence fence2 = fencesSt1[handlerIdx2];
+            long availableOffset;
+            while ((availableOffset = fence2.getAcquire(0)) < globalOffset) {
+                Thread.onSpinWait();
+//            Thread.yield();
+                spinsCounter2++;
+            }
+            fencesCache[handlerIdx2] = availableOffset;
+        } else {
+            hit2Counter++;
         }
 
         return resultsBuffers[handlerIdx2].get(index);
@@ -201,4 +249,8 @@ public final class ResponsesAggregator2 implements SimpleMessageHandler {
     };
 
 
+    @Override
+    public String toString() {
+        return "ResponsesSmartAggregator";
+    }
 }

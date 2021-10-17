@@ -10,7 +10,6 @@ import exchange.core2.revelator.processors.IFlowProcessorsFactory;
 import exchange.core2.revelator.processors.ProcessorsFactories;
 import exchange.core2.revelator.processors.pipelined.PipelinedFlowProcessor;
 import exchange.core2.revelator.processors.simple.SimpleFlowProcessor;
-import exchange.core2.revelator.utils.AffinityThreadFactory;
 import org.agrona.BitUtil;
 import org.agrona.collections.LongHashSet;
 import org.slf4j.Logger;
@@ -18,37 +17,104 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ThreadFactory;
 
 public final class PaymentsCore {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentsCore.class);
 
-    public final static int BUFFER_SIZE = 4 * 1024 * 1024;
+    public final static int BUFFER_SIZE = 1024 * 1024;
 
     private final Revelator revelator;
     private final PaymentsApi paymentsApi;
 
 
-    public static PaymentsCore createSimple(IPaymentsResponseHandler responseHandler) {
+    public static PaymentsCore createSimple(IPaymentsResponseHandler responseHandler,
+                                            ThreadFactory threadFactory) {
 
         final LocalResultsByteBuffer resultsBuffer = LocalResultsByteBuffer.create(BUFFER_SIZE);
 
         final AccountsProcessor accountsProcessor = new AccountsProcessor();
 
-        final PaymentsHandler paymentsHandler = new PaymentsHandler(accountsProcessor, resultsBuffer);
+        final SimplePaymentsHandler paymentsHandler = new SimplePaymentsHandler(accountsProcessor, resultsBuffer);
 
         final ResponsesAggregator responsesAggregator = new ResponsesAggregator(resultsBuffer, responseHandler);
 
         final IFlowProcessorsFactory processorsFactory = ProcessorsFactories.chain(
                 List.of(paymentsHandler, responsesAggregator));
 
-        final AffinityThreadFactory atf = new AffinityThreadFactory(
-                AffinityThreadFactory.ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_PHYSICAL_CORE);
+        final Revelator revelator = Revelator.create(
+                BUFFER_SIZE,
+                processorsFactory,
+                threadFactory);
+
+        final PaymentsApi paymentsApi = new PaymentsApi(revelator, revelator.getIndexMask());
+
+        return new PaymentsCore(revelator, paymentsApi);
+    }
+
+    public static PaymentsCore createParallel(IPaymentsResponseHandler responseHandler,
+                                              ThreadFactory threadFactory,
+                                              int threadsNum) {
+        if (!BitUtil.isPowerOfTwo(threadsNum)) {
+            throw new IllegalArgumentException("Number of threads must be power of 2");
+        }
+
+        final long handlersMask = threadsNum - 1;
+
+        final LocalResultsByteBuffer[] resultsBuffers = new LocalResultsByteBuffer[threadsNum];
+        final IFence[] transferFences = new IFence[threadsNum];
+
+        final IFlowProcessorsFactory processorsFactory = (inboundFence, config) -> {
+
+            final List<IFlowProcessor> processors = new ArrayList<>();
+
+            for (int i = 0; i < threadsNum; i++) {
+
+                final LocalResultsByteBuffer resultsBuffer = LocalResultsByteBuffer.create(BUFFER_SIZE);
+                resultsBuffers[i] = resultsBuffer;
+
+                final AccountsProcessor accountsProcessor = new AccountsProcessor();
+
+                final PaymentsHandlerParallel paymentsHandler = new PaymentsHandlerParallel(
+                        accountsProcessor,
+                        resultsBuffer,
+                        i,
+                        handlersMask);
+
+                final SimpleFlowProcessor paymentsProcessor = new SimpleFlowProcessor(
+                        paymentsHandler,
+                        inboundFence,
+                        config);
+
+                transferFences[i] = paymentsProcessor.getReleasingFence();
+                processors.add(paymentsProcessor);
+
+            }
+
+            final ResponsesSmartAggregator responsesAggregator = new ResponsesSmartAggregator(
+                    resultsBuffers,
+                    transferFences,
+                    handlersMask,
+                    responseHandler,
+                    config.getBuffer());
+
+            final SimpleFlowProcessor resultsProcessor = new SimpleFlowProcessor(
+                    responsesAggregator,
+                    inboundFence,
+                    config);
+
+            processors.add(resultsProcessor);
+
+            return new IFlowProcessorsFactory.ProcessorsChain(
+                    processors,
+                    resultsProcessor.getReleasingFence());
+        };
 
         final Revelator revelator = Revelator.create(
                 BUFFER_SIZE,
                 processorsFactory,
-                atf);
+                threadFactory);
 
         final PaymentsApi paymentsApi = new PaymentsApi(revelator, revelator.getIndexMask());
 
@@ -56,6 +122,7 @@ public final class PaymentsCore {
     }
 
     public static PaymentsCore createPipelined(IPaymentsResponseHandler responseHandler,
+                                               ThreadFactory threadFactory,
                                                int threadsNum) {
 
         if (!BitUtil.isPowerOfTwo(threadsNum)) {
@@ -71,7 +138,7 @@ public final class PaymentsCore {
 
             final List<IFlowProcessor> processors = new ArrayList<>();
 
-            final List<IFence> transferReleasingFences = new ArrayList<>();
+            final List<IFence> outboundFences = new ArrayList<>();
 
             for (int i = 0; i < threadsNum; i++) {
 
@@ -100,6 +167,7 @@ public final class PaymentsCore {
                         resultsBuffers,
                         lockedAccounts,
                         fencesSt1,
+                        i,
                         handlersMask);
 
 
@@ -112,11 +180,10 @@ public final class PaymentsCore {
 
                 processors.add(transferProcessor);
 
-                transferReleasingFences.add(transferProcessor.getReleasingFence());
-
+                outboundFences.add(transferProcessor.getReleasingFence());
             }
 
-            final ResponsesAggregator2 responsesAggregator = new ResponsesAggregator2(
+            final ResponsesSmartAggregator responsesAggregator = new ResponsesSmartAggregator(
                     resultsBuffers,
                     fencesSt1,
                     handlersMask,
@@ -125,28 +192,25 @@ public final class PaymentsCore {
 
             final SimpleFlowProcessor resultsProcessor = new SimpleFlowProcessor(
                     responsesAggregator,
-                    new AggregatingMinFence(transferReleasingFences),
+                    inboundFence,
                     config);
 
             processors.add(resultsProcessor);
+            outboundFences.add(resultsProcessor.getReleasingFence());
 
             return new IFlowProcessorsFactory.ProcessorsChain(
                     processors,
-                    resultsProcessor.getReleasingFence());
+                    new AggregatingMinFence(outboundFences));
         };
-
-
-        final AffinityThreadFactory atf = new AffinityThreadFactory(
-                AffinityThreadFactory.ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_PHYSICAL_CORE);
 
         final Revelator revelator = Revelator.create(
                 BUFFER_SIZE,
                 processorsFactory,
-                atf);
+                threadFactory);
 
         final PaymentsApi paymentsApi = new PaymentsApi(revelator, revelator.getIndexMask());
 
-        return new PaymentsCore( revelator, paymentsApi);
+        return new PaymentsCore(revelator, paymentsApi);
 
     }
 

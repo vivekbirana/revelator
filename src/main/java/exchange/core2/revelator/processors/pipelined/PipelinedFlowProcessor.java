@@ -8,7 +8,9 @@ import exchange.core2.revelator.processors.IFlowProcessor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
@@ -34,7 +36,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
     private final int numHandlers;
     private final PipelinedStageHandler<S>[] handlers;
-    private final int PIPELINE_SIZE = 8; // should be be 2^N
+    private final int PIPELINE_SIZE = 32; // should be be 2^N
     private final S[] sessions;
 
     private final IFence inboundFence;
@@ -47,6 +49,11 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
     private final int[] workWeights;
 //    private final int missWeights[];
+
+
+    private long dataSpinCounter = 0;
+    private final long[] missCounters;
+
 
     @SuppressWarnings("unchecked")
     public PipelinedFlowProcessor(final List<PipelinedStageHandler<S>> handlers,
@@ -62,6 +69,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
         this.inboundFence = inboundFence;
         this.indexMask = indexMask;
         this.buffer = buffer;
+        this.missCounters = new long[handlers.size()];
     }
 
     @SuppressWarnings("unchecked")
@@ -111,6 +119,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
             // check for new messages or init new sessions only if there free space in the cyclic sessions buffer
             if (tailSequence < gatingSequence) {
+//            if (tailSequence == headSequence) { // TODO affects latency!!
 
                 // try to wait for incomingFence if it is time for that
                 // availableOffset will become larger than initializerOffset if new messages arrived
@@ -121,6 +130,20 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
                 //do {
                 //  workCounter++;
                 nextAvailableOffset = inboundFence.getAcquire(Long.MIN_VALUE);
+
+                if (tailSequence == headSequence && initializerOffset == nextAvailableOffset) {
+                    while (initializerOffset == (nextAvailableOffset = inboundFence.getAcquire(Long.MIN_VALUE))) {
+//                        Thread.yield();
+                        Thread.onSpinWait();
+//                        LockSupport.parkNanos(1L);
+                        dataSpinCounter++;
+                    }
+                }
+
+//                if(initializerOffset == nextAvailableOffset){
+//                    Thread.yield();
+//                }
+
                 //Thread.onSpinWait();
                 //} while (availableOffset <= initializerOffset);
 
@@ -196,6 +219,15 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
                         break;
                     }
 
+                    if (session.messageType == Revelator.MSG_TYPE_TEST_CONTROL) {
+                        final long data = buffer[index + 3];
+                        if (data == 1073923874826736264L) {
+                            //log.debug("{} spin:{} miss:{}", this, dataSpinCounter, Arrays.toString(missCounters));
+                            Arrays.fill(missCounters, 0L);
+                            dataSpinCounter = 0L;
+                        }
+                    }
+
                 }
             } else {
 //                log.debug("Skip:  space in the cyclic sessions buffer");
@@ -259,6 +291,8 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
                             // not - postpone next call by some constant
                             handlerWorkTriggers[handlerIdx] = workCounter + (workWeight << 2);
                             sequence--;
+
+                            missCounters[handlerIdx]++;
                         }
 
                     } else {
@@ -306,4 +340,10 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 //    }
 
 
+    @Override
+    public String toString() {
+        return "PipelinedFlowProcessor{" +
+                Arrays.toString(handlers) +
+                '}';
+    }
 }

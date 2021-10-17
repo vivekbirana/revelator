@@ -15,4 +15,8 @@ public interface SimpleMessageHandler {
                        long globalOffset,
                        long correlationId,
                        byte msgType);
+
+    default void onShutdown() {
+    }
+
 }

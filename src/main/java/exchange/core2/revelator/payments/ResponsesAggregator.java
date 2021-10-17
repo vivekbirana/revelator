@@ -1,16 +1,21 @@
 package exchange.core2.revelator.payments;
 
+import exchange.core2.revelator.Revelator;
 import exchange.core2.revelator.buffers.LocalResultsByteBuffer;
 import exchange.core2.revelator.processors.simple.SimpleMessageHandler;
+import jdk.internal.vm.annotation.Contended;
 
 public final class ResponsesAggregator implements SimpleMessageHandler {
-
 
     private final LocalResultsByteBuffer resultsBuffer;
     private final IPaymentsResponseHandler responseHandler;
 
+
+    @Contended
     private int lastAddr;
-    private long[] lastBuf;
+
+    @Contended
+    private long[] requestsBuffer;
 
     public ResponsesAggregator(LocalResultsByteBuffer resultsBuffer,
                                IPaymentsResponseHandler responseHandler) {
@@ -28,20 +33,45 @@ public final class ResponsesAggregator implements SimpleMessageHandler {
                               final long correlationId,
                               final byte msgType) {
 
-        // TODO mic from multiple buffers
-        final long resultsCode = resultsBuffer.get(index);
+        final int resultsCode = resultsBuffer.get(index);
 
         this.lastAddr = index;
-        this.lastBuf = buffer;
+        this.requestsBuffer = buffer;
+
+        final IPaymentsResponseHandler.IRequestAccessor accessor;
+        switch (msgType) {
+            case PaymentsApi.CMD_TRANSFER -> accessor = transferAccessor;
+            case PaymentsApi.CMD_ADJUST -> accessor = adjustBalanceAccessor;
+            case PaymentsApi.CMD_OPEN_ACCOUNT -> accessor = openAccountAccessor;
+            case PaymentsApi.CMD_CLOSE_ACCOUNT -> accessor = closeAccountAccessor;
+            case Revelator.MSG_TYPE_TEST_CONTROL -> accessor = testControlCmdAccessor;
+            default -> throw new IllegalArgumentException("Unexpected message type " + msgType);
+        }
 
         responseHandler.commandResult(
                 timestamp,
                 correlationId,
-                (int) resultsCode,
-                transferAccessor);
-
-
+                resultsCode,
+                accessor);
     }
+
+    private final IPaymentsResponseHandler.IAdjustBalanceAccessor adjustBalanceAccessor = new IPaymentsResponseHandler.IAdjustBalanceAccessor() {
+        @Override
+        public byte getCommandType() {
+            return PaymentsApi.CMD_ADJUST;
+        }
+
+        @Override
+        public long getAccount() {
+            return requestsBuffer[lastAddr];
+        }
+
+        @Override
+        public long getAmount() {
+            return requestsBuffer[lastAddr + 1];
+        }
+    };
+
 
     private final IPaymentsResponseHandler.ITransferAccessor transferAccessor = new IPaymentsResponseHandler.ITransferAccessor() {
         @Override
@@ -51,17 +81,17 @@ public final class ResponsesAggregator implements SimpleMessageHandler {
 
         @Override
         public long getAccountFrom() {
-            return lastBuf[lastAddr];
+            return requestsBuffer[lastAddr];
         }
 
         @Override
         public long getAccountTo() {
-            return lastBuf[lastAddr + 1];
+            return requestsBuffer[lastAddr + 1];
         }
 
         @Override
         public long getAmount() {
-            return lastBuf[lastAddr + 2];
+            return requestsBuffer[lastAddr + 2];
         }
 
         @Override
@@ -69,5 +99,64 @@ public final class ResponsesAggregator implements SimpleMessageHandler {
             throw new UnsupportedOperationException();
         }
     };
+
+    private final IPaymentsResponseHandler.IOpenAccountAccessor openAccountAccessor = new IPaymentsResponseHandler.IOpenAccountAccessor() {
+        @Override
+        public byte getCommandType() {
+            return PaymentsApi.CMD_OPEN_ACCOUNT;
+        }
+
+        @Override
+        public long getAccount() {
+            return requestsBuffer[lastAddr];
+        }
+    };
+
+    private final IPaymentsResponseHandler.ICloseAccountAccessor closeAccountAccessor = new IPaymentsResponseHandler.ICloseAccountAccessor() {
+        @Override
+        public byte getCommandType() {
+            return PaymentsApi.CMD_CLOSE_ACCOUNT;
+        }
+
+        @Override
+        public long getAccount() {
+            return requestsBuffer[lastAddr];
+        }
+    };
+
+    private final IPaymentsResponseHandler.ITestControlCmdAccessor testControlCmdAccessor = new IPaymentsResponseHandler.ITestControlCmdAccessor() {
+
+        @Override
+        public byte getCommandType() {
+            return Revelator.MSG_TYPE_TEST_CONTROL;
+        }
+
+        @Override
+        public int getMsgSize() {
+            return (int) requestsBuffer[lastAddr - Revelator.MSG_HEADER_SIZE + 2];
+        }
+
+        @Override
+        public byte getMsgType() {
+            final long header1 = requestsBuffer[lastAddr - Revelator.MSG_HEADER_SIZE];
+            final int header2 = (int) (header1 >>> 56);
+            return (byte) (header2 & 0x1F);
+        }
+
+        @Override
+        public long getData(int offset) {
+            final int msgSize = getMsgSize();
+            if (offset < 0 || offset >= msgSize) {
+                throw new IllegalArgumentException("Can not request offset " + offset + " because message size is " + msgSize);
+            }
+            return requestsBuffer[lastAddr + offset];
+        }
+
+        @Override
+        public long[] getData() {
+            throw new UnsupportedOperationException(); // TODO implement
+        }
+    };
+
 
 }

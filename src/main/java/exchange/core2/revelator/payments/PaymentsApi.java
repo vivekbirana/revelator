@@ -30,7 +30,7 @@ public final class PaymentsApi {
                          final long amount,
                          final int currency) {
 
-        final int msgSize = 4;
+        final int msgSize = 5;
         final long claimSeq = revelator.claimSingleMessage(msgSize, timestamp, correlationId, CMD_TRANSFER);
 
         final int index = (int) (claimSeq & indexMask);

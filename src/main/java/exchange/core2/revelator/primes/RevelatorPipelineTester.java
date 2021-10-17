@@ -51,7 +51,7 @@ public final class RevelatorPipelineTester {
 
 
             final AffinityThreadFactory atf = new AffinityThreadFactory(
-                    AffinityThreadFactory.ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_PHYSICAL_CORE);
+                    AffinityThreadFactory.ThreadAffinityMode.AFFINITY_PHYSICAL_CORE);
 
             final Revelator r = Revelator.create(
                     bufferSizeTest,

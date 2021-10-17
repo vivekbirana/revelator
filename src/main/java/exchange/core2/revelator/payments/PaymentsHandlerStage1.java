@@ -22,6 +22,8 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
     private final LongHashSet lockedAccounts;
 
+//    private long useless = 0;
+
     public PaymentsHandlerStage1(AccountsProcessor accountsProcessor,
                                  long[] requestsBuffer,
                                  LocalResultsByteBuffer resultsBuffer,
@@ -151,9 +153,10 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
         if (!accountsProcessor.accountExists(account)) {
 
             log.warn("Account {} does not exists or closed!", account);
+//            log.warn("Useless {} ", useless);
 
-            // account does not exists or closed
-            resultsBuffer.set(session.bufferIndex, (byte) -1);
+            // account does not exist or closed
+            resultsBuffer.set(session.bufferIndex, (byte) -2);
 //            log.debug("st1Fence.setRelease({})", session.globalOffset);
             st1Fence.setRelease(session.globalOffset);
             return true;
@@ -173,7 +176,6 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
         final long accountSrc = requestsBuffer[session.bufferIndex];
         final long accountDst = requestsBuffer[session.bufferIndex + 1];
-        final long amount = requestsBuffer[session.bufferIndex + 2];
 
         session.processSrc = (accountSrc & handlersMask) == handlerIndex;
         session.processDst = (accountDst & handlersMask) == handlerIndex;
@@ -182,6 +184,14 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
             // message is not related to this handler - just skip it
             return true;
         }
+
+        final long amount = requestsBuffer[session.bufferIndex + 2];
+
+//        int h = Hashing.hash(accountDst);
+//        for (int i = 0; i < 60; i++) {
+//            h = Hashing.hash(h);
+//        }
+//        useless += h;
 
         final boolean success;
 
@@ -244,5 +254,10 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
     @Override
     public int getHitWorkWeight() {
         return 10;
+    }
+
+    @Override
+    public String toString() {
+        return "ST1(" + handlerIndex + ')';
     }
 }

@@ -18,18 +18,21 @@ public final class PaymentsHandlerStage2 implements PipelinedStageHandler<Transf
 
     private final IFence[] fencesSt1;
 
+    private final int handlerIndex;
     private final long handlersMask;
 
     public PaymentsHandlerStage2(AccountsProcessor accountsProcessor,
                                  LocalResultsByteBuffer[] resultsBuffers,
                                  LongHashSet lockedAccounts,
                                  IFence[] fencesSt1,
+                                 int handlerIndex,
                                  long handlersMask) {
 
         this.accountsProcessor = accountsProcessor;
         this.resultsBuffers = resultsBuffers;
         this.lockedAccounts = lockedAccounts;
         this.fencesSt1 = fencesSt1;
+        this.handlerIndex = handlerIndex;
         this.handlersMask = handlersMask;
     }
 
@@ -101,5 +104,10 @@ public final class PaymentsHandlerStage2 implements PipelinedStageHandler<Transf
     @Override
     public int getHitWorkWeight() {
         return 5;
+    }
+
+    @Override
+    public String toString() {
+        return "ST2(" + handlerIndex +')';
     }
 }

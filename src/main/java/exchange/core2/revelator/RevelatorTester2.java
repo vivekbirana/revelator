@@ -24,7 +24,7 @@ public final class RevelatorTester2 implements LatencyTesterModule.TestingHandle
     public RevelatorTester2() {
 
         final AffinityThreadFactory atf = new AffinityThreadFactory(
-                AffinityThreadFactory.ThreadAffinityMode.THREAD_AFFINITY_ENABLE_PER_LOGICAL_CORE);
+                AffinityThreadFactory.ThreadAffinityMode.AFFINITY_LOGICAL_CORE);
 
         this.revelator = Revelator.create(
                 bufferSizeTest,

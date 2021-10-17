@@ -93,6 +93,8 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 
                     log.debug("processor shutdown (received msgType={}, publishing positionSeq={}+{})", msgType, positionSeq, Revelator.MSG_HEADER_SIZE);
                     releasingFence.setRelease(positionSeq + Revelator.MSG_HEADER_SIZE);
+
+                    handler.onShutdown();
                     return;
 
                 } else {
@@ -130,8 +132,12 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 
 //            log.debug("positionSeq: {}->{} ", positionSeq, positionSeq + headerSize + payloadSize );
 
+//                    releasingFence.setRelease(positionSeq);
+
                     positionSeq += Revelator.MSG_HEADER_SIZE + payloadSize;
                 }
+
+//                releasingFence.setRelease(positionSeq);
             }
 
 //            log.debug("RELEASE {}", availableSeq);
@@ -142,5 +148,10 @@ public final class SimpleFlowProcessor implements IFlowProcessor {
 
     public SingleWriterFence getReleasingFence() {
         return releasingFence;
+    }
+
+    @Override
+    public String toString() {
+        return "SimpleFlowProcessor{" + handler + '}';
     }
 }
