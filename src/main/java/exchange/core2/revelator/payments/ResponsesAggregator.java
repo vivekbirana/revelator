@@ -41,7 +41,7 @@ public final class ResponsesAggregator implements SimpleMessageHandler {
         final IPaymentsResponseHandler.IRequestAccessor accessor;
         switch (msgType) {
             case PaymentsApi.CMD_TRANSFER -> accessor = transferAccessor;
-            case PaymentsApi.CMD_ADJUST -> accessor = adjustBalanceAccessor;
+            case PaymentsApi.CMD_ADJUST_BALANCE -> accessor = adjustBalanceAccessor;
             case PaymentsApi.CMD_OPEN_ACCOUNT -> accessor = openAccountAccessor;
             case PaymentsApi.CMD_CLOSE_ACCOUNT -> accessor = closeAccountAccessor;
             case Revelator.MSG_TYPE_TEST_CONTROL -> accessor = testControlCmdAccessor;
@@ -58,7 +58,7 @@ public final class ResponsesAggregator implements SimpleMessageHandler {
     private final IPaymentsResponseHandler.IAdjustBalanceAccessor adjustBalanceAccessor = new IPaymentsResponseHandler.IAdjustBalanceAccessor() {
         @Override
         public byte getCommandType() {
-            return PaymentsApi.CMD_ADJUST;
+            return PaymentsApi.CMD_ADJUST_BALANCE;
         }
 
         @Override

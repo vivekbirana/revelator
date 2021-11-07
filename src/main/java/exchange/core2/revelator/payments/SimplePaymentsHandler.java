@@ -52,11 +52,11 @@ public final class SimplePaymentsHandler implements SimpleMessageHandler {
                 final long accountTo = buffer[addr + 1];
                 final long amount = buffer[addr + 2];
 
-                final boolean success = accountsProcessor.transferLocally(accountFrom, accountTo, amount);
+                final boolean success = accountsProcessor.transferLocally(accountFrom, accountTo, amount, amount);
                 resultsBuffer.set(addr, success ? (byte) 1 : -1);
             }
 
-            case PaymentsApi.CMD_ADJUST -> {
+            case PaymentsApi.CMD_ADJUST_BALANCE -> {
                 final long account = buffer[addr];
                 final long amount = buffer[addr + 1];
 

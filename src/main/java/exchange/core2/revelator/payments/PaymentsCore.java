@@ -152,8 +152,12 @@ public final class PaymentsCore {
 
                 final AccountsProcessor accountsProcessor = new AccountsProcessor();
 
+                CurrencyRateProcessor currencyRateProcessor = new CurrencyRateProcessor();
+                TransferFeesProcessor transferFeesProcessor = new TransferFeesProcessor(currencyRateProcessor);
+
                 final PaymentsHandlerStage1 handlerSt1 = new PaymentsHandlerStage1(
                         accountsProcessor,
+                        transferFeesProcessor,
                         config.getBuffer(),
                         resultsBuffer,
                         fenceSt1,
@@ -164,6 +168,7 @@ public final class PaymentsCore {
 
                 final PaymentsHandlerStage2 handlerSt2 = new PaymentsHandlerStage2(
                         accountsProcessor,
+                        transferFeesProcessor,
                         resultsBuffers,
                         lockedAccounts,
                         fencesSt1,

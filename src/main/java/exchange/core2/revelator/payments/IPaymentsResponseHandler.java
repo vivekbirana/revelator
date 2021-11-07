@@ -59,4 +59,8 @@ public interface IPaymentsResponseHandler {
 
     }
 
+
+    interface IUnsupportedAccessor extends IPaymentsResponseHandler.IRequestAccessor {
+
+    }
 }

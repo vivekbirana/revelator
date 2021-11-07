@@ -10,6 +10,30 @@ public final class TransferSession extends PipelinedFlowSession {
     public boolean processDst;
     public long revertAmount;
 
+    public long msgAmount;
+    public TransferType transferType;
+
     //    public long feeAmount;
     //    public short currency;
+
+
+    @Override
+    public String toString() {
+        return "TransferSession{" +
+                "accountSrc=" + accountSrc +
+                ", accountDst=" + accountDst +
+                ", processSrc=" + processSrc +
+                ", processDst=" + processDst +
+                ", revertAmount=" + revertAmount +
+                ", msgAmount=" + msgAmount +
+                ", transferType=" + transferType +
+                ", globalOffset=" + globalOffset +
+                ", bufferIndex=" + bufferIndex +
+                ", payloadSize=" + payloadSize +
+                ", messageType=" + messageType +
+                ", timestamp=" + timestamp +
+                ", correlationId=" + correlationId +
+                ", userCookie=" + userCookie +
+                '}';
+    }
 }

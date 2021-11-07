@@ -13,6 +13,9 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
     private static final Logger log = LoggerFactory.getLogger(PaymentsHandlerStage1.class);
 
     private final AccountsProcessor accountsProcessor;
+    private final TransferFeesProcessor transferFeesProcessor;
+
+
     private final LocalResultsByteBuffer resultsBuffer;
     private final SingleWriterFence st1Fence;
 
@@ -22,9 +25,11 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
     private final LongHashSet lockedAccounts;
 
+
 //    private long useless = 0;
 
     public PaymentsHandlerStage1(AccountsProcessor accountsProcessor,
+                                 TransferFeesProcessor transferFeesProcessor,
                                  long[] requestsBuffer,
                                  LocalResultsByteBuffer resultsBuffer,
                                  SingleWriterFence st1Fence,
@@ -33,6 +38,7 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
                                  long handlersMask) {
 
         this.accountsProcessor = accountsProcessor;
+        this.transferFeesProcessor = transferFeesProcessor;
         this.requestsBuffer = requestsBuffer;
         this.resultsBuffer = resultsBuffer;
         this.st1Fence = st1Fence;
@@ -47,30 +53,43 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
 //        log.debug("ST1 t={}", session.timestamp);
 
-        switch (session.messageType) {
 
-            case PaymentsApi.CMD_TRANSFER -> {
-                return processTransfer(session);
+        try {
+            switch (session.messageType) {
+
+                case PaymentsApi.CMD_TRANSFER -> {
+                    return processTransfer(session);
+                }
+
+                case PaymentsApi.CMD_OPEN_ACCOUNT -> {
+                    return processOpenAccount(session);
+                }
+
+                case PaymentsApi.CMD_CLOSE_ACCOUNT -> {
+                    return processCloseAccount(session);
+                }
+
+                case PaymentsApi.CMD_ADJUST_BALANCE -> {
+                    return processAdjustment(session);
+                }
+
+                case PaymentsApi.CMD_CTRL_FEES -> {
+                    return processControlFeeConfig(session);
+                }
+
+                case PaymentsApi.CMD_CTRL_CUR_RATE -> {
+                    return processControlCurrencyRate(session);
+                }
+
+                case Revelator.MSG_TYPE_TEST_CONTROL, Revelator.MSG_TYPE_POISON_PILL -> {
+                    resultsBuffer.set(session.bufferIndex, (byte) 42);
+                    st1Fence.setRelease(session.globalOffset);
+                    return true;
+                }
+
             }
-
-            case PaymentsApi.CMD_OPEN_ACCOUNT -> {
-                return processOpenAccount(session);
-            }
-
-            case PaymentsApi.CMD_CLOSE_ACCOUNT -> {
-                return processCloseAccount(session);
-            }
-
-            case PaymentsApi.CMD_ADJUST -> {
-                return processAdjustment(session);
-            }
-
-            case Revelator.MSG_TYPE_TEST_CONTROL, Revelator.MSG_TYPE_POISON_PILL -> {
-                resultsBuffer.set(session.bufferIndex, (byte) 42);
-                st1Fence.setRelease(session.globalOffset);
-                return true;
-            }
-
+        } catch (final Exception ex) {
+            throw new RuntimeException("Failed to process command. " + session, ex);
         }
 
         throw new IllegalStateException("Unsupported message type " + session.messageType + " at offset " + session.globalOffset);
@@ -185,13 +204,20 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
             return true;
         }
 
-        final long amount = requestsBuffer[session.bufferIndex + 2];
+        final long msgAmount = requestsBuffer[session.bufferIndex + 2];
+        session.msgAmount = msgAmount;
+
+        final long ttAndCurr = requestsBuffer[session.bufferIndex + 3];
+        session.transferType = TransferType.fromByte((byte) ttAndCurr);
 
 //        int h = Hashing.hash(accountDst);
 //        for (int i = 0; i < 60; i++) {
 //            h = Hashing.hash(h);
 //        }
 //        useless += h;
+
+        final short currencySrc = AccountsProcessor.extractCurrency(accountSrc);
+        final short currencyDst = AccountsProcessor.extractCurrency(accountDst);
 
         final boolean success;
 
@@ -210,10 +236,42 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
                 return false;
             }
 
-            session.revertAmount = 0; // never need to revert
-            success = accountsProcessor.transferLocally(accountSrc, accountDst, amount);
+            // no St2-revert scenario possible for local transfer
+            session.revertAmount = 0;
+
+            switch (session.transferType) {
+
+                case DESTINATION_EXACT -> {
+
+                    final long amountSrc = transferFeesProcessor.processDstExact(msgAmount, currencySrc, currencyDst);
+                    success = accountsProcessor.transferLocally(accountSrc, accountDst, amountSrc, msgAmount);
+                    if (!success) {
+                        transferFeesProcessor.revertDstExact(msgAmount, currencySrc, currencyDst);
+                    }
+
+                }
+
+                case SOURCE_EXACT -> {
+
+                    final long amountDst = transferFeesProcessor.processSrcExact(msgAmount, currencySrc, currencyDst);
+
+                    if (amountDst > 0) {
+                        success = accountsProcessor.transferLocally(accountSrc, accountDst, msgAmount, amountDst);
+                        if (!success) {
+                            transferFeesProcessor.revertSrcExact(msgAmount, currencySrc, currencyDst);
+                        }
+                    } else {
+                        success = false;
+                    }
+
+                }
+
+                default -> throw new IllegalStateException("Unsupported transfer type: " + session.transferType);
+            }
+
 
         } else if (session.processSrc) {
+            // process only Source account
 
             if (!lockedAccounts.add(accountSrc)) {
                 // already processing this account - can not proceed with stage1
@@ -222,10 +280,30 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
             }
 
-            session.revertAmount = amount;
-            success = accountsProcessor.withdrawal(accountSrc, amount);
+
+            switch (session.transferType) {
+
+                case DESTINATION_EXACT -> {
+
+                    final long amountSrc = transferFeesProcessor.processDstExact(msgAmount, currencySrc, currencyDst);
+                    session.revertAmount = amountSrc;
+                    success = accountsProcessor.withdrawal(accountSrc, amountSrc);
+                    if (!success) {
+                        transferFeesProcessor.revertDstExact(msgAmount, currencySrc, currencyDst);
+                    }
+                }
+
+                case SOURCE_EXACT -> {
+                    session.revertAmount = msgAmount;
+                    success = accountsProcessor.withdrawal(accountSrc, msgAmount);
+                }
+
+                default -> throw new IllegalStateException("Unsupported transfer type: " + session.transferType);
+            }
+
 
         } else {
+            // process only Destination account
 
             if (!lockedAccounts.add(accountDst)) {
                 // already processing this account - can not proceed with stage1
@@ -233,15 +311,38 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
                 return false;
             }
 
-            session.revertAmount = amount;
-            success = accountsProcessor.deposit(accountDst, amount);
+            switch (session.transferType) {
+
+                case DESTINATION_EXACT -> {
+
+                    session.revertAmount = msgAmount;
+                    success = accountsProcessor.deposit(accountDst, msgAmount);
+                }
+
+                case SOURCE_EXACT -> {
+
+                    final long amountDst = transferFeesProcessor.processSrcExact(msgAmount, currencySrc, currencyDst);
+
+                    if (amountDst > 0) {
+                        session.revertAmount = amountDst;
+                        success = accountsProcessor.deposit(accountDst, amountDst);
+                        if (!success) {
+                            transferFeesProcessor.revertSrcExact(msgAmount, currencySrc, currencyDst);
+                        }
+                    } else {
+                        success = false;
+                    }
+                }
+
+                default -> throw new IllegalStateException("Unsupported transfer type: " + session.transferType);
+            }
         }
 
         session.accountSrc = accountSrc;
         session.accountDst = accountDst;
 
         if (!success) {
-            log.warn("Can not process transfer {}->{}! (process {}->{})", accountSrc, accountDst, session.processSrc, session.processDst);
+            log.warn("Can not process transfer {}->{}! (process {}->{}) {}", accountSrc, accountDst, session.processSrc, session.processDst, session.transferType);
         }
 
         resultsBuffer.set(session.bufferIndex, success ? (byte) 1 : -1);
@@ -250,6 +351,39 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
         return true;
     }
+
+    private boolean processControlCurrencyRate(final TransferSession session) {
+
+        final long currencies = requestsBuffer[session.bufferIndex];
+        final short currencyFrom = (short) (currencies >> 32);
+        final short currencyTo = (short) (currencies & Integer.MAX_VALUE);
+
+        final double rate = Double.longBitsToDouble(requestsBuffer[session.bufferIndex + 1]);
+
+        transferFeesProcessor.updateCurrencyRate(currencyFrom, currencyTo, rate);
+
+        return true;
+    }
+
+
+    private boolean processControlFeeConfig(final TransferSession session) {
+
+
+        final double feeK = Double.longBitsToDouble(requestsBuffer[session.bufferIndex]);
+        transferFeesProcessor.setFeeK(feeK);
+
+        for (int i = 1; i < session.payloadSize; i += 3) {
+
+            final short currency = (short) requestsBuffer[session.bufferIndex + i];
+            final long minFee = requestsBuffer[session.bufferIndex + i + 1];
+            final long maxFee = requestsBuffer[session.bufferIndex + i + 2];
+
+            transferFeesProcessor.putFeeConfig(currency, minFee, maxFee);
+        }
+
+        return true;
+    }
+
 
     @Override
     public int getHitWorkWeight() {

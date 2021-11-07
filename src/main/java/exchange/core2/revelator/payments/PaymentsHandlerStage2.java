@@ -12,6 +12,8 @@ public final class PaymentsHandlerStage2 implements PipelinedStageHandler<Transf
     private static final Logger log = LoggerFactory.getLogger(PaymentsHandlerStage2.class);
 
     private final AccountsProcessor accountsProcessor;
+    private final TransferFeesProcessor transferFeesProcessor;
+
     private final LocalResultsByteBuffer[] resultsBuffers;
 
     private final LongHashSet lockedAccounts;
@@ -22,6 +24,7 @@ public final class PaymentsHandlerStage2 implements PipelinedStageHandler<Transf
     private final long handlersMask;
 
     public PaymentsHandlerStage2(AccountsProcessor accountsProcessor,
+                                 TransferFeesProcessor transferFeesProcessor,
                                  LocalResultsByteBuffer[] resultsBuffers,
                                  LongHashSet lockedAccounts,
                                  IFence[] fencesSt1,
@@ -29,6 +32,7 @@ public final class PaymentsHandlerStage2 implements PipelinedStageHandler<Transf
                                  long handlersMask) {
 
         this.accountsProcessor = accountsProcessor;
+        this.transferFeesProcessor = transferFeesProcessor;
         this.resultsBuffers = resultsBuffers;
         this.lockedAccounts = lockedAccounts;
         this.fencesSt1 = fencesSt1;
@@ -92,9 +96,21 @@ public final class PaymentsHandlerStage2 implements PipelinedStageHandler<Transf
         if (otherResultCode != 1) {
             // other account processing failed - revert transaction
             final long amount = session.revertAmount;
-            accountsProcessor.revertDeposit(
-                    thisAccount,
-                    session.processDst ? amount : -amount);
+            final long amountCorrection = session.processDst ? amount : -amount;
+            accountsProcessor.balanceCorrection(thisAccount, amountCorrection);
+
+            // revert fees and conversions
+
+            final long amountMsg = session.msgAmount;
+
+            final short currencySrc = AccountsProcessor.extractCurrency(session.accountSrc);
+            final short currencyDst = AccountsProcessor.extractCurrency(session.accountDst);
+
+            switch (session.transferType) {
+                case DESTINATION_EXACT -> transferFeesProcessor.revertDstExact(amountMsg, currencySrc, currencyDst);
+                case SOURCE_EXACT -> transferFeesProcessor.revertSrcExact(amountMsg, currencySrc, currencyDst);
+                default -> throw new IllegalStateException("Unsupported transfer type: " + session.transferType);
+            }
         }
 
         lockedAccounts.remove(thisAccount);
@@ -108,6 +124,6 @@ public final class PaymentsHandlerStage2 implements PipelinedStageHandler<Transf
 
     @Override
     public String toString() {
-        return "ST2(" + handlerIndex +')';
+        return "ST2(" + handlerIndex + ')';
     }
 }

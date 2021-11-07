@@ -67,9 +67,10 @@ public final class ResponsesSmartAggregator implements SimpleMessageHandler {
         final IPaymentsResponseHandler.IRequestAccessor accessor;
         switch (msgType) {
             case PaymentsApi.CMD_TRANSFER -> accessor = transferAccessor;
-            case PaymentsApi.CMD_ADJUST -> accessor = adjustBalanceAccessor;
+            case PaymentsApi.CMD_ADJUST_BALANCE -> accessor = adjustBalanceAccessor;
             case PaymentsApi.CMD_OPEN_ACCOUNT -> accessor = openAccountAccessor;
             case PaymentsApi.CMD_CLOSE_ACCOUNT -> accessor = closeAccountAccessor;
+            case PaymentsApi.CMD_CTRL_CUR_RATE, PaymentsApi.CMD_CTRL_FEES -> accessor = unsupportedAccessor;
             case Revelator.MSG_TYPE_TEST_CONTROL -> accessor = testControlCmdAccessor;
             default -> throw new IllegalArgumentException("Unexpected message type " + msgType);
         }
@@ -148,7 +149,7 @@ public final class ResponsesSmartAggregator implements SimpleMessageHandler {
     private final IPaymentsResponseHandler.IAdjustBalanceAccessor adjustBalanceAccessor = new IPaymentsResponseHandler.IAdjustBalanceAccessor() {
         @Override
         public byte getCommandType() {
-            return PaymentsApi.CMD_ADJUST;
+            return PaymentsApi.CMD_ADJUST_BALANCE;
         }
 
         @Override
@@ -246,6 +247,10 @@ public final class ResponsesSmartAggregator implements SimpleMessageHandler {
         public long[] getData() {
             throw new UnsupportedOperationException(); // TODO implement
         }
+    };
+
+    private final IPaymentsResponseHandler.IUnsupportedAccessor unsupportedAccessor = () -> {
+        throw new UnsupportedOperationException();
     };
 
 

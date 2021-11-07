@@ -14,12 +14,14 @@ import org.apache.commons.lang3.mutable.MutableInt;
 import org.apache.commons.lang3.mutable.MutableLong;
 import org.eclipse.collections.impl.map.mutable.primitive.IntLongHashMap;
 import org.eclipse.collections.impl.map.mutable.primitive.LongLongHashMap;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public final class PaymentsTester {
@@ -29,6 +31,8 @@ public final class PaymentsTester {
     private static final long SET_REFERENCE_TIME_CODE = 8121092016521817263L;
     private static final long END_BATCH_CODE = 7293651321864826354L;
     private static final long DUMP_STAT = 1073923874826736264L;
+
+    private static final double FEE_K = 0.00375;
 
     public static void main(String[] args) throws InterruptedException {
         PaymentsTester paymentsTester = new PaymentsTester();
@@ -52,12 +56,21 @@ public final class PaymentsTester {
         final int transfersToCreate = 1_000_000;
         final int iterations = 10;
 
+        final Map<Integer, Double> currencyRates = CurrenciesGenerator.generateRandomRates(currencies.keySet().stream(), 2.2, seed);
+        log.info("Rates: {}", currencyRates);
+        final Map<Integer, Map<Integer, Double>> currencyRatesMatrix = CurrenciesGenerator.createRatesMatrix(currencyRates);
+
+        final Map<Short, PaymentsApi.FeeConfig> feeLimits = prepareFeeLimits(currencyRates);
+        log.info("Fee Limits: {}", feeLimits);
+//        feeLimits.forEach((k, v) -> log.debug("Fee Limit: {}:{}", k, v));
+
+
 //        final int accountsToCreate = 40;
 //        final int transfersToCreate = 40;
 
         log.info("Creating {} accounts ...", accountsToCreate);
 //        final List<BitSet> clients = ClientsCurrencyAccountsGenerator.generateClients(accountsToCreate, currencies, seed);
-        final long[] accounts = ClientsCurrencyAccountsGenerator.generateAccountsForTransfers(accountsToCreate, currencies, PaymentsTester::mapToAccount, 40, seed);
+        final long[] accounts = ClientsCurrencyAccountsGenerator.generateAccountsForTransfers(accountsToCreate, currencies, AccountsProcessor::mapToAccount, 40, seed);
 
         log.info("Generated {} accounts", accounts.length);
 
@@ -85,39 +98,58 @@ public final class PaymentsTester {
         final MutableInt correlationId = new MutableInt();
 
 
-        log.info("Generating {}*{} transfers ...", iterations, transfersToCreate);
-
         try (AffinityLock lock = Affinity.acquireCore()) {
 
+            // set fees
+            paymentsApi.adjustFee(
+                    System.nanoTime(),
+                    correlationId.getAndIncrement(),
+                    FEE_K,
+                    feeLimits);
+
+            // set conversion rates
+            log.info("Setting {}^2 cross conversion rates ...", currencyRatesMatrix.size() - 1);
+            currencyRatesMatrix.forEach((currencyFrom, map) ->
+                    map.forEach((currencyTo, rate) ->
+                            paymentsApi.adjustCurrencyRate(
+                                    System.nanoTime(),
+                                    correlationId.getAndIncrement(),
+                                    (short) (int) currencyFrom,
+                                    (short) (int) currencyTo,
+                                    rate)));
+
+            log.info("Generating {}*{} transfers ...", iterations, transfersToCreate);
+
             final List<List<TransferTestOrder>> allTransfers = new ArrayList<>();
-            for (int iteration = 0; iteration < iterations; iteration++) {
-
-                final int iterationSeed = Hashing.hash(seed + iteration);
-
-                final List<TransferTestOrder> transfers = generateTransfers(transfersToCreate, accounts, iterationSeed);
-
+            for (int i = 0; i < iterations; i++) {
+                final int iterationSeed = Hashing.hash(seed + i);
+                final List<TransferTestOrder> transfers = generateTransfers(
+                        transfersToCreate,
+                        accounts,
+                        feeLimits,
+                        currencyRatesMatrix,
+                        iterationSeed);
                 allTransfers.add(transfers);
-
-//        transfers.forEach(tx -> log.debug("TR: {}", tx));
-
-//            log.info("Generated {} transfers (seed={})", transfers.size(), seed + iteration);
+                log.info("{}. Generated {} transfers (seed={})", i, transfers.size(), iterationSeed);
             }
 
+            // TODO fix maxBalances
             log.info("Generating  maxBalances....");
-
             final LongLongHashMap maxBalances = createMaxBalances(allTransfers.stream().flatMap(Collection::stream));
-
-//            log.info("Generated {} maxBalances", maxBalances.size());
-
+            log.info("Generated {} maxBalances", maxBalances.size());
 //        maxBalances.forEachKeyValue((acc, maxbal) -> log.debug("MAX-BAL: {}={}", acc, maxbal));
 
             log.info("Opening {} accounts with {} positive balances...", accounts.length, maxBalances.size());
+//            log.info("Opening {} accounts with positive balances...", accounts.length);
 
             for (final long account : accounts) {
+
                 paymentsApi.openAccount(System.nanoTime(), correlationId.getAndIncrement(), account);
                 final long amount = maxBalances.get(account);
-                if (amount > 0) {
-                    paymentsApi.adjustBalance(System.nanoTime(), correlationId.getAndIncrement(), account, amount);
+
+                if (amount != 0) {
+                    final long amount1 = 9999999999999999L;
+                    paymentsApi.adjustBalance(System.nanoTime(), correlationId.getAndIncrement(), account, amount1);
                 }
             }
 
@@ -132,26 +164,18 @@ public final class PaymentsTester {
 
             int transferSetIdx = 0;
 
-            for (int tps = 800_000; tps <= 8_000_000; tps += 100_000 + (rand.nextInt(4000) - 2000)) {
+            for (int tps = 800_000; tps <= 7_000_000; tps += 100_000 + (rand.nextInt(4000) - 2000)) {
 
 //            log.info("Adjusted {} accounts", maxBalances.size());
 
                 if (transferSetIdx == allTransfers.size()) {
                     transferSetIdx = 0;
-                    log.info("Updating {} balances...", maxBalances.size());
-                    maxBalances.forEachKeyValue((account, amount) -> paymentsApi.adjustBalance(System.nanoTime(), correlationId.getAndIncrement(), account, amount));
-                    flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, System.nanoTime(), 0L);
+//                    log.info("Updating {} balances...", maxBalances.size());
+//                    maxBalances.forEachKeyValue((account, amount) -> paymentsApi.adjustBalance(System.nanoTime(), correlationId.getAndIncrement(), account, amount));
+//                    flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, System.nanoTime(), 0L);
                 }
 
-                // System.exit(1);
-
-//            log.info("Done");
-
-//            log.info("Performing {} transfers ...", transfers.size());
-
                 final long picosPerCmd = (1024L * 1_000_000_000L) / tps;
-
-//        log.info("picosPerCmd={}", picosPerCmd);
 
                 long plannedTimestampPs = 10_000_000L; // relative timestamp in 1/1024 ns units (~1 ps)
                 long lastKnownTimestampPs = 0L;
@@ -191,7 +215,8 @@ public final class PaymentsTester {
                             order.sourceAccount,
                             order.destinationAccount,
                             order.amount,
-                            order.currency);
+                            order.currency,
+                            order.transferType);
                 }
 
                 flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, startTimeNs, END_BATCH_CODE);
@@ -219,6 +244,17 @@ public final class PaymentsTester {
 
     }
 
+    @NotNull
+    private Map<Short, PaymentsApi.FeeConfig> prepareFeeLimits(final Map<Integer, Double> currencyRates) {
+
+        return currencyRates.entrySet().stream()
+                .collect(Collectors.toMap(
+                        e -> (short) (int) e.getKey(),
+                        e -> new PaymentsApi.FeeConfig(
+                                1 + (long) (100.0 / e.getValue()),
+                                10 + (long) (1000.0 / e.getValue()))));
+    }
+
     private void flushAndWait(final MutableLong controlCorrelationCounter,
                               final BlockingQueue<Long> syncQueue,
                               final PaymentsApi paymentsApi,
@@ -234,6 +270,8 @@ public final class PaymentsTester {
 
     public static List<TransferTestOrder> generateTransfers(final int transfersNum,
                                                             final long[] accounts,
+                                                            final Map<Short, PaymentsApi.FeeConfig> feeLimits,
+                                                            final Map<Integer, Map<Integer, Double>> currencyRatesMatrix,
                                                             final int seed) {
 
         final List<TransferTestOrder> transfersList = new ArrayList<>();
@@ -245,14 +283,31 @@ public final class PaymentsTester {
             final int idxToRaw = random.nextInt(accounts.length - 1);
             final int idxTo = idxToRaw < idxFrom ? idxToRaw : idxToRaw + 1;
 
-            final long amount = random.nextInt(100_000) + 10;
-
             final long sourceAccount = accounts[idxFrom];
-
             final long destinationAccount = accounts[idxTo];
-            final int currency = extractCurrency(sourceAccount);
+            final short srcCurrency = AccountsProcessor.extractCurrency(sourceAccount);
+            final short dstCurrency = AccountsProcessor.extractCurrency(destinationAccount);
 
-            transfersList.add(new TransferTestOrder(sourceAccount, destinationAccount, amount, currency));
+            final TransferType transferType = random.nextBoolean()
+                    ? TransferType.DESTINATION_EXACT
+                    : TransferType.SOURCE_EXACT;
+
+            final long amount;
+            if (transferType == TransferType.DESTINATION_EXACT) {
+                amount = random.nextInt(100_000) + feeLimits.get(srcCurrency).maxFee() + 10;
+
+            } else {
+
+                final double xRate = (srcCurrency != dstCurrency)
+                        ? currencyRatesMatrix.get((int) dstCurrency).get((int) srcCurrency)
+                        : 1.0;
+
+                final long base = feeLimits.get(srcCurrency).maxFee() + (long) xRate + 1;
+
+                amount = random.nextInt(100_000) + base;
+            }
+
+            transfersList.add(new TransferTestOrder(sourceAccount, destinationAccount, amount, srcCurrency, transferType));
         }
 
         return transfersList;
@@ -280,7 +335,7 @@ public final class PaymentsTester {
 
         balances.forEachKeyValue(
                 (account, amount) ->
-                        balances.addToValue(extractCurrency(account), amount));
+                        balances.addToValue(AccountsProcessor.extractCurrency(account), amount));
 
         return treasureBalances;
     }
@@ -354,8 +409,11 @@ public final class PaymentsTester {
             long sourceAccount,
             long destinationAccount,
             long amount,
-            int currency) {
+            int currency,
+            TransferType transferType) {
     }
+
+
 //
 //    public class TransferTestOrder {
 //
@@ -389,31 +447,5 @@ public final class PaymentsTester {
 //
 //    }
 
-
-    private static long mapToAccount(long clientId, int currencyId, int accountNum) {
-
-        if (clientId > 0x7_FFFF_FFFFL) {
-            throw new IllegalArgumentException("clientId is too big");
-        }
-
-        if (currencyId > 0xFFFF) {
-            throw new IllegalArgumentException("currencyId is too big");
-        }
-
-        if (accountNum > 0xFF) {
-            throw new IllegalArgumentException("accountNum is too big");
-        }
-
-        final long accountRaw = (clientId << 28) | ((long) currencyId << 12) | ((long) accountNum << 4);
-        final int checkDigit = Hashing.hash(accountRaw) & 0xF;
-//        log.debug("{} {} {} -> {} + CD={} -> {}", clientId, currencyId, accountNum, accountRaw, checkDigit, accountRaw | checkDigit);
-        return accountRaw | checkDigit;
-    }
-
-    private static int extractCurrency(long accountId) {
-
-        return (int) (accountId >> 12) & 0xFFFF;
-
-    }
 
 }
