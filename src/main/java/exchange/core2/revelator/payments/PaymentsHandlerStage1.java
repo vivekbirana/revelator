@@ -1,7 +1,7 @@
 package exchange.core2.revelator.payments;
 
 import exchange.core2.revelator.Revelator;
-import exchange.core2.revelator.buffers.LocalResultsByteBuffer;
+import exchange.core2.revelator.buffers.LocalResultsLongBuffer;
 import exchange.core2.revelator.fences.SingleWriterFence;
 import exchange.core2.revelator.processors.pipelined.PipelinedStageHandler;
 import org.agrona.collections.LongHashSet;
@@ -16,7 +16,7 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
     private final TransferFeesProcessor transferFeesProcessor;
 
 
-    private final LocalResultsByteBuffer resultsBuffer;
+    private final LocalResultsLongBuffer resultsBuffer;
     private final SingleWriterFence st1Fence;
 
     private final long[] requestsBuffer;
@@ -31,7 +31,7 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
     public PaymentsHandlerStage1(AccountsProcessor accountsProcessor,
                                  TransferFeesProcessor transferFeesProcessor,
                                  long[] requestsBuffer,
-                                 LocalResultsByteBuffer resultsBuffer,
+                                 LocalResultsLongBuffer resultsBuffer,
                                  SingleWriterFence st1Fence,
                                  LongHashSet lockedAccounts,
                                  int handlerIndex,
@@ -103,7 +103,9 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
             return true;
         }
 
-        if (!accountsProcessor.accountExists(account)) {
+        // lock is not needed because St2 can not change account state (opened/closed)
+
+        if (accountsProcessor.accountNotExists(account)) {
 //            log.debug("Opening account {}", account);
             accountsProcessor.openNewAccount(account);
             resultsBuffer.set(session.bufferIndex, (byte) 1);
@@ -131,7 +133,7 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
             return false;
         }
 
-        if (!accountsProcessor.accountExists(account)) {
+        if (accountsProcessor.accountNotExists(account)) {
             // account already closed
             resultsBuffer.set(session.bufferIndex, (byte) 2);
             st1Fence.setRelease(session.globalOffset);
@@ -169,7 +171,7 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
             return false;
         }
 
-        if (!accountsProcessor.accountExists(account)) {
+        if (accountsProcessor.accountNotExists(account)) {
 
             log.warn("Account {} does not exists or closed!", account);
 //            log.warn("Useless {} ", useless);
@@ -204,11 +206,18 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
             return true;
         }
 
-        final long msgAmount = requestsBuffer[session.bufferIndex + 2];
-        session.msgAmount = msgAmount;
+        session.amountSrc = 0L;
+        session.amountDst = 0L;
+        session.treasureAmountSrc = 0L;
+        session.treasureAmountDst = 0L;
+        session.accountSrc = accountSrc;
+        session.accountDst = accountDst;
+
+        final long orderAmount = requestsBuffer[session.bufferIndex + 2];
 
         final long ttAndCurr = requestsBuffer[session.bufferIndex + 3];
-        session.transferType = TransferType.fromByte((byte) ttAndCurr);
+        TransferType transferType = TransferType.fromByte((byte) ttAndCurr);
+        final short orderCurrency = (short) (ttAndCurr >> 8);
 
 //        int h = Hashing.hash(accountDst);
 //        for (int i = 0; i < 60; i++) {
@@ -216,10 +225,7 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 //        }
 //        useless += h;
 
-        final short currencySrc = AccountsProcessor.extractCurrency(accountSrc);
-        final short currencyDst = AccountsProcessor.extractCurrency(accountDst);
-
-        final boolean success;
+        final long exchangeData;
 
         if (session.processSrc && session.processDst) {
             // source and destination both handled by this processor
@@ -237,36 +243,31 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
             }
 
             // no St2-revert scenario possible for local transfer
-            session.revertAmount = 0;
 
-            switch (session.transferType) {
+            final boolean withdrawalSuccessful = transferFeesProcessor.performWithdrawal(
+                    session,
+                    transferType,
+                    accountSrc,
+                    accountDst,
+                    orderAmount,
+                    orderCurrency);
 
-                case DESTINATION_EXACT -> {
+            if (withdrawalSuccessful) {
 
-                    final long amountSrc = transferFeesProcessor.processDstExact(msgAmount, currencySrc, currencyDst);
-                    success = accountsProcessor.transferLocally(accountSrc, accountDst, amountSrc, msgAmount);
-                    if (!success) {
-                        transferFeesProcessor.revertDstExact(msgAmount, currencySrc, currencyDst);
-                    }
+                final boolean success = accountsProcessor.deposit(accountDst, session.amountDst);
 
+                if (success) {
+
+                    exchangeData = 0L;
+
+                } else {
+                    // revert all changes
+                    accountsProcessor.balanceCorrection(accountSrc, session.amountSrc);
+                    exchangeData = -1L;
                 }
 
-                case SOURCE_EXACT -> {
-
-                    final long amountDst = transferFeesProcessor.processSrcExact(msgAmount, currencySrc, currencyDst);
-
-                    if (amountDst > 0) {
-                        success = accountsProcessor.transferLocally(accountSrc, accountDst, msgAmount, amountDst);
-                        if (!success) {
-                            transferFeesProcessor.revertSrcExact(msgAmount, currencySrc, currencyDst);
-                        }
-                    } else {
-                        success = false;
-                    }
-
-                }
-
-                default -> throw new IllegalStateException("Unsupported transfer type: " + session.transferType);
+            } else {
+                exchangeData = -1L;
             }
 
 
@@ -277,29 +278,23 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
                 // already processing this account - can not proceed with stage1
                 // back-off and let stage to finalize processing
                 return false;
-
             }
 
+            // no St2-revert scenario possible for local transfer
+            session.amountSrc = 0L;
+            session.amountDst = 0L;
+            session.treasureAmountSrc = 0L;
+            session.treasureAmountDst = 0L;
 
-            switch (session.transferType) {
+            session.localPartSucceeded = transferFeesProcessor.performWithdrawal(
+                    session,
+                    transferType,
+                    accountSrc,
+                    accountDst,
+                    orderAmount,
+                    orderCurrency);
 
-                case DESTINATION_EXACT -> {
-
-                    final long amountSrc = transferFeesProcessor.processDstExact(msgAmount, currencySrc, currencyDst);
-                    session.revertAmount = amountSrc;
-                    success = accountsProcessor.withdrawal(accountSrc, amountSrc);
-                    if (!success) {
-                        transferFeesProcessor.revertDstExact(msgAmount, currencySrc, currencyDst);
-                    }
-                }
-
-                case SOURCE_EXACT -> {
-                    session.revertAmount = msgAmount;
-                    success = accountsProcessor.withdrawal(accountSrc, msgAmount);
-                }
-
-                default -> throw new IllegalStateException("Unsupported transfer type: " + session.transferType);
-            }
+            exchangeData = session.localPartSucceeded ? session.amountDst : -1;
 
 
         } else {
@@ -311,41 +306,22 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
                 return false;
             }
 
-            switch (session.transferType) {
+            // ST1 should at least check if DST account exists or not
+            session.localPartSucceeded = accountsProcessor.accountExists(accountDst);
+            exchangeData = session.localPartSucceeded ? 0 : -1;
 
-                case DESTINATION_EXACT -> {
-
-                    session.revertAmount = msgAmount;
-                    success = accountsProcessor.deposit(accountDst, msgAmount);
-                }
-
-                case SOURCE_EXACT -> {
-
-                    final long amountDst = transferFeesProcessor.processSrcExact(msgAmount, currencySrc, currencyDst);
-
-                    if (amountDst > 0) {
-                        session.revertAmount = amountDst;
-                        success = accountsProcessor.deposit(accountDst, amountDst);
-                        if (!success) {
-                            transferFeesProcessor.revertSrcExact(msgAmount, currencySrc, currencyDst);
-                        }
-                    } else {
-                        success = false;
-                    }
-                }
-
-                default -> throw new IllegalStateException("Unsupported transfer type: " + session.transferType);
-            }
+            session.amountSrc = 0L;
+            session.amountDst = 0L;
+            session.treasureAmountSrc = 0L;
+            session.treasureAmountDst = 0L;
         }
 
-        session.accountSrc = accountSrc;
-        session.accountDst = accountDst;
-
-        if (!success) {
-            log.warn("Can not process transfer {}->{}! (process {}->{}) {}", accountSrc, accountDst, session.processSrc, session.processDst, session.transferType);
+        if (exchangeData == -1) {
+            log.warn("Can not process transfer {}->{}! (process {}->{}) {}", accountSrc, accountDst, session.processSrc, session.processDst, transferType);
         }
 
-        resultsBuffer.set(session.bufferIndex, success ? (byte) 1 : -1);
+        // put destination amount int buffer index, or -1 if transaction failed on source side
+        resultsBuffer.set(session.bufferIndex, exchangeData);
 
         st1Fence.setRelease(session.globalOffset);
 

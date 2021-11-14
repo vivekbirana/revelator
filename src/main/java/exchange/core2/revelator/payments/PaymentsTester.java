@@ -283,31 +283,37 @@ public final class PaymentsTester {
             final int idxToRaw = random.nextInt(accounts.length - 1);
             final int idxTo = idxToRaw < idxFrom ? idxToRaw : idxToRaw + 1;
 
-            final long sourceAccount = accounts[idxFrom];
-            final long destinationAccount = accounts[idxTo];
-            final short srcCurrency = AccountsProcessor.extractCurrency(sourceAccount);
-            final short dstCurrency = AccountsProcessor.extractCurrency(destinationAccount);
+            final long srcAcc = accounts[idxFrom];
+            final long dscAcc = accounts[idxTo];
+
+            final short dstCurrency = AccountsProcessor.extractCurrency(dscAcc);
+
+            // pick random currency (with required distribution)
+            final int randomIndex = random.nextInt(accounts.length);
+            final long randomCurrencyAccount = accounts[randomIndex];
+            final short orderCurrency = AccountsProcessor.extractCurrency(randomCurrencyAccount);
 
             final TransferType transferType = random.nextBoolean()
                     ? TransferType.DESTINATION_EXACT
                     : TransferType.SOURCE_EXACT;
 
-            final long amount;
-            if (transferType == TransferType.DESTINATION_EXACT) {
-                amount = random.nextInt(100_000) + feeLimits.get(srcCurrency).maxFee() + 10;
+            // TODO Use single hashtable
+            final double xRate = (orderCurrency != dstCurrency)
+                    ? currencyRatesMatrix.get((int) dstCurrency).get((int) orderCurrency)
+                    : 1.0;
 
-            } else {
+            final long minOrderAmount = switch (transferType) {
 
-                final double xRate = (srcCurrency != dstCurrency)
-                        ? currencyRatesMatrix.get((int) dstCurrency).get((int) srcCurrency)
-                        : 1.0;
+                case DESTINATION_EXACT -> (long) xRate;
 
-                final long base = feeLimits.get(srcCurrency).maxFee() + (long) xRate + 1;
+                // because fee is subtracted from the amount, it is important to provide necessary
+                // amount considering ORD->DST conversion
+                case SOURCE_EXACT -> (long) (feeLimits.get(dstCurrency).maxFee() * xRate);
+            };
 
-                amount = random.nextInt(100_000) + base;
-            }
+            final long orderAmount = minOrderAmount + random.nextInt(100_000) + 1L;
 
-            transfersList.add(new TransferTestOrder(sourceAccount, destinationAccount, amount, srcCurrency, transferType));
+            transfersList.add(new TransferTestOrder(srcAcc, dscAcc, orderAmount, orderCurrency, transferType));
         }
 
         return transfersList;
@@ -409,43 +415,7 @@ public final class PaymentsTester {
             long sourceAccount,
             long destinationAccount,
             long amount,
-            int currency,
+            short currency,
             TransferType transferType) {
     }
-
-
-//
-//    public class TransferTestOrder {
-//
-//        private final long sourceAccount;
-//        private final long destinationAccount;
-//        private final long amount;
-//        private final short currency;
-//
-//        public TransferTestOrder(long sourceAccount, long destinationAccount, long amount, short currency) {
-//            this.sourceAccount = sourceAccount;
-//            this.destinationAccount = destinationAccount;
-//            this.amount = amount;
-//            this.currency = currency;
-//        }
-//
-//        public long getSourceAccount() {
-//            return sourceAccount;
-//        }
-//
-//        public long getDestinationAccount() {
-//            return destinationAccount;
-//        }
-//
-//        public long getAmount() {
-//            return amount;
-//        }
-//
-//        public short getCurrency() {
-//            return currency;
-//        }
-//
-//    }
-
-
 }

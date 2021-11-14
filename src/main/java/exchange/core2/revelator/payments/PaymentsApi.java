@@ -17,6 +17,8 @@ public final class PaymentsApi {
     public static final byte CMD_CTRL_FEES = (byte) 14;
     public static final byte CMD_CTRL_TREASURE = (byte) 15;
 
+    // TODO add reports
+
     public static final byte QRY_GET_BALANCE = (byte) 20;
 
     private static final Logger log = LoggerFactory.getLogger(PaymentsApi.class);
@@ -35,7 +37,7 @@ public final class PaymentsApi {
                          final long accountSrc,
                          final long accountDst,
                          final long amount,
-                         final int currency,
+                         final short currency,
                          final TransferType transferType) {
 
         final int msgSize = 5;

@@ -1,7 +1,7 @@
 package exchange.core2.revelator.payments;
 
 import exchange.core2.revelator.Revelator;
-import exchange.core2.revelator.buffers.LocalResultsByteBuffer;
+import exchange.core2.revelator.buffers.LocalResultsLongBuffer;
 import exchange.core2.revelator.fences.IFence;
 import exchange.core2.revelator.processors.simple.SimpleMessageHandler;
 import jdk.internal.vm.annotation.Contended;
@@ -12,7 +12,7 @@ public final class ResponsesSmartAggregator implements SimpleMessageHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ResponsesSmartAggregator.class);
 
-    private final LocalResultsByteBuffer[] resultsBuffers;
+    private final LocalResultsLongBuffer[] resultsBuffers;
     private final IFence[] fencesSt1;
     private final IPaymentsResponseHandler responseHandler;
     private final long[] requestsBuffer;
@@ -36,11 +36,11 @@ public final class ResponsesSmartAggregator implements SimpleMessageHandler {
     @Contended
     private final long[] fencesCache;
 
-    public ResponsesSmartAggregator(LocalResultsByteBuffer[] resultsBuffers,
-                                    IFence[] fencesSt1,
-                                    long handlersMask,
-                                    IPaymentsResponseHandler responseHandler,
-                                    long[] requestsBuffer) {
+    public ResponsesSmartAggregator(final LocalResultsLongBuffer[] resultsBuffers,
+                                    final IFence[] fencesSt1,
+                                    final long handlersMask,
+                                    final IPaymentsResponseHandler responseHandler,
+                                    final long[] requestsBuffer) {
 
         this.resultsBuffers = resultsBuffers;
         this.fencesSt1 = fencesSt1;
@@ -93,7 +93,7 @@ public final class ResponsesSmartAggregator implements SimpleMessageHandler {
                 accessor);
     }
 
-    private byte waitAndMergeResult(final int index,
+    private long waitAndMergeResult(final int index,
                                     final long globalOffset,
                                     final byte msgType) {
 
@@ -114,18 +114,23 @@ public final class ResponsesSmartAggregator implements SimpleMessageHandler {
         } else {
             hit1Counter++;
         }
-        final byte result1 = resultsBuffers[handlerIdx1].get(index);
+
+        // result for first fence has received
+        final long result1 = resultsBuffers[handlerIdx1].get(index);
         if (msgType != PaymentsApi.CMD_TRANSFER) {
+            // can return result, unless it is transfer command - would need to wait second party
             return result1;
         }
 
         if (result1 < 0) {
+            // can return error (skip waiting other part)
             return result1;
         }
 
         final long dstAccount = requestsBuffer[index + 1];
         final int handlerIdx2 = (int) (dstAccount & handlersMask);
         if (handlerIdx2 == handlerIdx1) {
+            // can return anyway because processing was done by same thread
             return result1;
         }
 

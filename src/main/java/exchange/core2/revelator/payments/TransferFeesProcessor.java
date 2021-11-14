@@ -9,114 +9,204 @@ public final class TransferFeesProcessor {
 
     private static final Logger log = LoggerFactory.getLogger(TransferFeesProcessor.class);
 
+    private final AccountsProcessor accountsProcessor;
     private final CurrencyRateProcessor currencyRateProcessor;
 
     private double feeK = 0.0;
     private final ShortObjectHashMap<FeeConfig> currencyFees = new ShortObjectHashMap<>();
     private final ShortLongHashMap treasures = new ShortLongHashMap();
 
-    public TransferFeesProcessor(CurrencyRateProcessor currencyRateProcessor) {
+
+    public TransferFeesProcessor(final CurrencyRateProcessor currencyRateProcessor,
+                                 final AccountsProcessor accountsProcessor) {
+
         this.currencyRateProcessor = currencyRateProcessor;
-    }
-
-    public long processDstExact(long amountMsg, short currencySrc, short currencyDst) {
-        // TODO handle errors
-
-        // calculate source amount
-
-        final long amountSrcRaw;
-
-        if (currencyDst == currencySrc) {
-            amountSrcRaw = amountMsg;
-        } else {
-            amountSrcRaw = currencyRateProcessor.convertRate(amountMsg, currencyDst, currencySrc);
-
-            // update treasures for currency conversion
-            addTreasure(currencyDst, -amountMsg);
-            addTreasure(currencySrc, amountSrcRaw);
-        }
-
-        // apply fee on source amount
-        final long fee = calculateFee(amountSrcRaw, currencySrc);
-
-        addTreasure(currencySrc, fee);
-
-        return amountSrcRaw + fee;
-    }
-
-    public void revertDstExact(long amountMsg, short currencySrc, short currencyDst) {
-
-        final long amountSrcRaw;
-
-        if (currencyDst == currencySrc) {
-            amountSrcRaw = amountMsg;
-        } else {
-            amountSrcRaw = currencyRateProcessor.convertRate(amountMsg, currencyDst, currencySrc);
-
-            // revert treasures for currency conversion
-            addTreasure(currencyDst, amountMsg);
-            addTreasure(currencySrc, -amountSrcRaw);
-        }
-
-        // revert fee
-        final long fee = calculateFee(amountSrcRaw, currencySrc);
-
-        addTreasure(currencySrc, -fee);
+        this.accountsProcessor = accountsProcessor;
     }
 
 
-    public long processSrcExact(long amountMsg, short currencySrc, short currencyDst) {
+    public boolean performWithdrawal(final TransferSession session,
+                                     final TransferType transferType,
+                                     final long accountSrc,
+                                     final long accountDst,
+                                     final long orderAmount,
+                                     final short orderCurrency) {
 
-        // calculate source fee
-        final long feeSrc = calculateFee(amountMsg, currencySrc);
+        return switch (transferType) {
 
-        final long amountSrcAfterFee = amountMsg - feeSrc;
+            case DESTINATION_EXACT -> processDstExactInit(
+                    orderAmount,
+                    orderCurrency,
+                    accountSrc,
+                    accountDst,
+                    session);
 
-        if (feeSrc >= amountMsg) {
-            log.debug("fee {} >= amount {}", feeSrc, amountMsg);
-            return -1;
-        }
-
-        final long amountDst;
-
-        if (currencyDst == currencySrc) {
-            amountDst = amountSrcAfterFee;
-            addTreasure(currencySrc, feeSrc);
-
-        } else {
-
-            amountDst = currencyRateProcessor.convertRate(amountSrcAfterFee, currencySrc, currencyDst);
-
-            // too small amount after conversion
-            if (amountDst <= 0) {
-                log.debug("too small amount after conversion - amountDst={} (currencySrc={} currencyDst={} amountSrcAfterFee={})", amountDst, currencySrc, currencyDst, amountSrcAfterFee);
-                return -1;
-            }
-
-            addTreasure(currencyDst, -amountDst);
-            addTreasure(currencySrc, amountMsg);
-        }
-
-        if (amountDst <= 0) {
-            throw new IllegalStateException("amountMsg=" + amountMsg + " feeSrc=" + feeSrc + " amountSrcAfterFee=" + amountSrcAfterFee + " amountDst=" + amountDst);
-        }
-
-        return amountDst;
+            case SOURCE_EXACT -> processSrcExactInit(
+                    orderAmount,
+                    orderCurrency,
+                    accountSrc,
+                    accountDst,
+                    session);
+        };
     }
 
-    public void revertSrcExact(long amountMsg, short currencySrc, short currencyDst) {
+    /**
+     * /-<-convert--<--<-<-----------------\
+     * 11623 JPY (FEE) -> 11523 JPY  ........  100.00 USD ---> 85.73 EUR
+     * Calculate source amount and withdraw it
+     * Otherwise return false
+     */
+    public boolean processDstExactInit(final long orderAmount,
+                                       final short orderCurrency,
+                                       final long accountSrc,
+                                       final long accountDst,
+                                       final TransferSession session) {
 
-        // calculate source fee
-        final long feeSrc = calculateFee(amountMsg, currencySrc);
+        final short currencyDst = AccountsProcessor.extractCurrency(accountDst);
 
-        final long amountSrcAfterFee = amountMsg - feeSrc;
+        // calculate destination amount
+
+        final long amountDst = (currencyDst == orderCurrency)
+                ? orderAmount
+                : currencyRateProcessor.convertRate(orderAmount, orderCurrency, currencyDst);
+
+        if (amountDst == -1L) {
+            log.warn("Can not convert currency");
+            return false;
+        }
+
+        if (amountDst == 0) {
+            log.warn("can not transfer just 0");
+
+            // can not transfer just 0
+            return false;
+        }
+
+        // calculate source amount based on order amount
+
+        final short currencySrc = AccountsProcessor.extractCurrency(accountSrc);
+
+        final long amountSrc = (currencyDst == currencySrc)
+                ? amountDst
+                : currencyRateProcessor.convertRate(amountDst, currencyDst, currencySrc);
+
+        if (amountSrc == -1L) {
+            log.warn("Can not convert currency");
+            return false;
+        }
+
+        // apply fee to the calculated source amount
+        final long srcFee = calculateFee(amountSrc, currencySrc);
+
+        final long amountSrcWithFee = amountSrc + srcFee;
+
+        final boolean withdrawalSucceeded = accountsProcessor.withdrawal(accountSrc, amountSrcWithFee);
+
+        // Check for NSF
+        if (!withdrawalSucceeded) {
+            log.warn("NSF");
+            return false;
+        }
 
         if (currencyDst == currencySrc) {
-            addTreasure(currencySrc, -feeSrc);
+            session.treasureAmountSrc = srcFee;
+            session.treasureAmountDst = 0L;
         } else {
-            final long amountDst = currencyRateProcessor.convertRate(amountSrcAfterFee, currencySrc, currencyDst);
-            addTreasure(currencyDst, amountDst);
-            addTreasure(currencySrc, -amountMsg);
+            // update treasures for SOURCE -> DST conversion
+            session.treasureAmountSrc = amountSrcWithFee;
+            session.treasureAmountDst = -amountDst;
+        }
+
+        session.amountSrc = amountSrc;
+        session.amountDst = amountDst;
+
+        return true;
+    }
+
+
+    /**
+     * /-<-convert--<--<-----<-------<-----\
+     * 11523 JPY  ........  100.00 USD ---> 85.73 EUR ----> 85.23 EUR (FEE)
+     * Calculate source amount and withdraw it
+     * Otherwise return false
+     */
+    public boolean processSrcExactInit(final long orderAmount,
+                                       final short orderCurrency,
+                                       final long accountSrc,
+                                       final long accountDst,
+                                       final TransferSession session) {
+
+        final short currencyDst = AccountsProcessor.extractCurrency(accountDst);
+
+        // calculate destination amount
+
+        final long amountDst = (currencyDst == orderCurrency)
+                ? orderAmount
+                : currencyRateProcessor.convertRate(orderAmount, orderCurrency, currencyDst);
+
+        if (amountDst == -1L) {
+            log.warn("Can not convert currency");
+            return false;
+        }
+
+
+        // apply fee to the calculated destination amount
+        final long dstFee = calculateFee(amountDst, currencyDst);
+        final long amountDstAfterFee = amountDst - dstFee;
+
+        if (amountDstAfterFee <= 0) {
+            // can not transfer just 0 or negative
+            log.warn("Amount after fee is 0 or less: amountDst={} dstFee={}", amountDst, dstFee);
+            log.warn("ORD:{}:{} -> {}-DST:{}:{} - {} = {}", orderAmount, orderCurrency, accountDst, amountDst, currencyDst,  dstFee, amountDstAfterFee);
+            return false;
+        }
+
+        // calculate source amount based on order amount
+
+        final short currencySrc = AccountsProcessor.extractCurrency(accountSrc);
+
+        final long amountSrc = (currencyDst == currencySrc)
+                ? amountDst
+                : currencyRateProcessor.convertRate(amountDst, currencyDst, currencySrc);
+
+        if (amountSrc == -1L) {
+            log.warn("Can not convert currency");
+            return false;
+        }
+
+
+        final boolean withdrawalSucceeded = accountsProcessor.withdrawal(accountSrc, amountSrc);
+
+        // Check for NSF
+        if (!withdrawalSucceeded) {
+            log.warn("NSF");
+            return false;
+        }
+
+        if (currencyDst == currencySrc) {
+            session.treasureAmountSrc = 0L;
+            session.treasureAmountDst = dstFee; // fee in destination currency
+        } else {
+            // update treasures for SOURCE -> DST conversion
+            session.treasureAmountSrc = amountSrc; // source amount
+            session.treasureAmountDst = -amountDstAfterFee; // destination amount, holding fee
+        }
+
+        session.amountSrc = amountSrc;
+        session.amountDst = amountDst;
+
+        return true;
+    }
+
+    public void applyTreasures(short currencySrc,
+                               short currencyDst,
+                               TransferSession session) {
+
+        if (session.treasureAmountSrc != 0) {
+            treasures.addToValue(currencySrc, session.treasureAmountSrc);
+        }
+        if (session.treasureAmountDst != 0) {
+            treasures.addToValue(currencyDst, session.treasureAmountDst);
         }
     }
 
@@ -141,15 +231,6 @@ public final class TransferFeesProcessor {
         return feeLimited;
     }
 
-
-    public void addTreasure(short currency, long amount) {
-        treasures.addToValue(currency, amount);
-    }
-
-
-    public void revertConversion(long amount, short currency) {
-        treasures.addToValue(currency, -amount);
-    }
 
     public void setFeeK(final double feeK) {
 

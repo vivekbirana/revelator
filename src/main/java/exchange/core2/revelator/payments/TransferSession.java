@@ -6,14 +6,19 @@ public final class TransferSession extends PipelinedFlowSession {
 
     public long accountSrc;
     public long accountDst;
+
     public boolean processSrc;
     public boolean processDst;
-    public long revertAmount;
 
-    public long msgAmount;
-    public TransferType transferType;
+    public long amountSrc;
+    public long amountDst;
 
-    //    public long feeAmount;
+    public long treasureAmountSrc;
+    public long treasureAmountDst;
+
+    public boolean localPartSucceeded;
+
+
     //    public short currency;
 
 
@@ -24,9 +29,6 @@ public final class TransferSession extends PipelinedFlowSession {
                 ", accountDst=" + accountDst +
                 ", processSrc=" + processSrc +
                 ", processDst=" + processDst +
-                ", revertAmount=" + revertAmount +
-                ", msgAmount=" + msgAmount +
-                ", transferType=" + transferType +
                 ", globalOffset=" + globalOffset +
                 ", bufferIndex=" + bufferIndex +
                 ", payloadSize=" + payloadSize +

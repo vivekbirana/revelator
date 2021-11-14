@@ -2,6 +2,7 @@ package exchange.core2.revelator.payments;
 
 import exchange.core2.revelator.Revelator;
 import exchange.core2.revelator.buffers.LocalResultsByteBuffer;
+import exchange.core2.revelator.buffers.LocalResultsLongBuffer;
 import exchange.core2.revelator.fences.AggregatingMinFence;
 import exchange.core2.revelator.fences.IFence;
 import exchange.core2.revelator.fences.SingleWriterFence;
@@ -62,7 +63,7 @@ public final class PaymentsCore {
 
         final long handlersMask = threadsNum - 1;
 
-        final LocalResultsByteBuffer[] resultsBuffers = new LocalResultsByteBuffer[threadsNum];
+        final LocalResultsLongBuffer[] resultsBuffers = new LocalResultsLongBuffer[threadsNum];
         final IFence[] transferFences = new IFence[threadsNum];
 
         final IFlowProcessorsFactory processorsFactory = (inboundFence, config) -> {
@@ -71,7 +72,7 @@ public final class PaymentsCore {
 
             for (int i = 0; i < threadsNum; i++) {
 
-                final LocalResultsByteBuffer resultsBuffer = LocalResultsByteBuffer.create(BUFFER_SIZE);
+                final LocalResultsLongBuffer resultsBuffer = LocalResultsLongBuffer.create(BUFFER_SIZE);
                 resultsBuffers[i] = resultsBuffer;
 
                 final AccountsProcessor accountsProcessor = new AccountsProcessor();
@@ -131,7 +132,7 @@ public final class PaymentsCore {
 
         final long handlersMask = threadsNum - 1;
 
-        final LocalResultsByteBuffer[] resultsBuffers = new LocalResultsByteBuffer[threadsNum];
+        final LocalResultsLongBuffer[] resultsBuffers = new LocalResultsLongBuffer[threadsNum];
         final IFence[] fencesSt1 = new IFence[threadsNum];
 
         final IFlowProcessorsFactory processorsFactory = (inboundFence, config) -> {
@@ -142,7 +143,7 @@ public final class PaymentsCore {
 
             for (int i = 0; i < threadsNum; i++) {
 
-                final LocalResultsByteBuffer resultsBuffer = LocalResultsByteBuffer.create(BUFFER_SIZE);
+                final LocalResultsLongBuffer resultsBuffer = LocalResultsLongBuffer.create(BUFFER_SIZE);
                 resultsBuffers[i] = resultsBuffer;
 
                 final SingleWriterFence fenceSt1 = new SingleWriterFence();
@@ -153,7 +154,7 @@ public final class PaymentsCore {
                 final AccountsProcessor accountsProcessor = new AccountsProcessor();
 
                 CurrencyRateProcessor currencyRateProcessor = new CurrencyRateProcessor();
-                TransferFeesProcessor transferFeesProcessor = new TransferFeesProcessor(currencyRateProcessor);
+                TransferFeesProcessor transferFeesProcessor = new TransferFeesProcessor(currencyRateProcessor, accountsProcessor);
 
                 final PaymentsHandlerStage1 handlerSt1 = new PaymentsHandlerStage1(
                         accountsProcessor,

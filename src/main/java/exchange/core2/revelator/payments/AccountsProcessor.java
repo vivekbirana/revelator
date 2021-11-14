@@ -11,10 +11,10 @@ public final class AccountsProcessor {
 
     private static final Logger log = LoggerFactory.getLogger(AccountsProcessor.class);
 
+    @Deprecated
     public boolean transfer(final long accountFrom,
                             final long accountTo,
                             final long amount) {
-
         try {
             // TODO currency rate and fees
 
@@ -22,9 +22,7 @@ public final class AccountsProcessor {
             final long availableFrom = balances.get(accountFrom);
             final long fromNewBalance = Math.subtractExact(availableFrom, amount);
 
-//            if(accountFrom == 268478209 || accountTo == 268478209){
 //                log.debug("TRANSFER {} available={} amountSubstract={}", accountFrom, availableFrom, amount);
-//            }
 
             if (fromNewBalance < 0) {
                 log.debug("NSF accountFrom={} available={} amount={}", accountFrom, availableFrom, amount);
@@ -47,28 +45,7 @@ public final class AccountsProcessor {
         }
     }
 
-    public boolean transferFast(final long accountFrom,
-                                final long accountTo,
-                                final long amount) {
-
-        // TODO currency rate and fees
-
-        // find first account and check NSF
-        final long updatedFrom = balances.addToValue(accountFrom, -amount);
-
-        if (updatedFrom < 0) {
-//            log.debug("NSF accountFrom={} updatedFrom={} amount={}", accountFrom, updatedFrom, amount);
-            balances.addToValue(accountFrom, amount);
-            return false; // NSF
-        }
-
-//         find second account
-        balances.addToValue(accountTo, amount);
-
-        return true;
-
-    }
-
+    @Deprecated
     public boolean adjustBalance(final long account, final long amount) {
 
         try {
@@ -147,17 +124,23 @@ public final class AccountsProcessor {
         }
     }
 
-    public void revertWithdrawal(final long account, final long amount) {
-        balances.addToValue(account, -amount);
-    }
 
     public void balanceCorrection(final long account, final long amount) {
-        balances.addToValue(account, amount);
 
-        // TODO check if balance still positive
+//            long b = -1 - balances.get(account);
+//            log.debug("CORRECTION {} raw={} bal={} amount={}", account, balances.get(account), b, amount);
+
+        final long after = balances.addToValue(account, -amount);
+
+        if (isNegativeOrRemoved(after)) {
+            long b = -1 - after;
+            final String errMsg = String.format("Unsafe operation: CORR account=%d  amount=%d encodedBalance=%d balance=%d", account, amount, after, b);
+            throw new IllegalArgumentException(errMsg);
+        }
     }
 
     // unsafe
+    @Deprecated
     public boolean transferLocally(final long accountSrc,
                                    final long accountDst,
                                    final long amountSrc,
@@ -215,6 +198,10 @@ public final class AccountsProcessor {
 
     public boolean accountExists(final long account) {
         return balances.get(account) != 0;
+    }
+
+    public boolean accountNotExists(final long account) {
+        return balances.get(account) == 0;
     }
 
     public boolean accountHasZeroBalance(final long account) {

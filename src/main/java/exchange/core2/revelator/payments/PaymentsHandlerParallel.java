@@ -2,6 +2,7 @@ package exchange.core2.revelator.payments;
 
 import exchange.core2.revelator.Revelator;
 import exchange.core2.revelator.buffers.LocalResultsByteBuffer;
+import exchange.core2.revelator.buffers.LocalResultsLongBuffer;
 import exchange.core2.revelator.processors.simple.SimpleMessageHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,7 +13,7 @@ public final class PaymentsHandlerParallel implements SimpleMessageHandler {
     private static final Logger log = LoggerFactory.getLogger(PaymentsHandlerParallel.class);
 
     private final AccountsProcessor accountsProcessor;
-    private final LocalResultsByteBuffer resultsBuffer;
+    private final LocalResultsLongBuffer resultsBuffer;
 
     private final int handlerIndex;
     private final long handlersMask;
@@ -20,7 +21,7 @@ public final class PaymentsHandlerParallel implements SimpleMessageHandler {
     private long useless = 0;
 
     public PaymentsHandlerParallel(AccountsProcessor accountsProcessor,
-                                   LocalResultsByteBuffer resultsBuffer,
+                                   LocalResultsLongBuffer resultsBuffer,
                                    int handlerIndex,
                                    long handlersMask) {
 
