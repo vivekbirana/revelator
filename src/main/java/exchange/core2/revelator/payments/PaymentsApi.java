@@ -40,7 +40,7 @@ public final class PaymentsApi {
                          final short currency,
                          final TransferType transferType) {
 
-        final int msgSize = 5;
+        final int msgSize = 4;
         final long claimSeq = revelator.claimSingleMessage(msgSize, timestamp, correlationId, CMD_TRANSFER);
 
         final int index = (int) (claimSeq & indexMask);

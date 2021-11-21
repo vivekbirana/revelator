@@ -10,7 +10,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
@@ -36,7 +35,7 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
     private final int numHandlers;
     private final PipelinedStageHandler<S>[] handlers;
-    private final int PIPELINE_SIZE = 32; // should be be 2^N
+    private final int PIPELINE_SIZE = 64; // should be be 2^N
     private final S[] sessions;
 
     private final IFence inboundFence;
@@ -102,6 +101,8 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
         boolean isShutdown = false;
 
+        long lastOffsetToRelease = -1L;
+
         while (true) {
 
             // always work counter
@@ -112,9 +113,13 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
 //            log.info("------- new cycle, tailSequence={} headSequence={} gatingSequence={} ", tailSequence, headSequence, gatingSequence);
 
-            if (isShutdown && (tailSequence == headSequence)) {
-                log.info("All sessions processed, processor stopped");
-                return;
+            if ((tailSequence == headSequence)) {
+                if (isShutdown) {
+                    log.info("All sessions processed, processor stopped");
+                    return;
+                } else {
+                    releasingFence.setRelease(lastOffsetToRelease);
+                }
             }
 
             // check for new messages or init new sessions only if there free space in the cyclic sessions buffer
@@ -208,9 +213,15 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
 
                     if (tailSequence == gatingSequence) {
 //                        log.info("gatingSequence reached = {}", gatingSequence);
-
+//                        session.wordsLeftInBatch = 0;
                         break;
                     }
+
+                    // NOTE: (only if wordsLeftInBatch feature is enabled)
+                    // it is very important to write meaningful message after empty message because
+                    // batch-aggregation logic in handlers relies on assumption that last message is always non-empty
+
+//                    session.wordsLeftInBatch = (int) (nextAvailableOffset - initializerOffset);
 
                     if (session.messageType == Revelator.MSG_TYPE_POISON_PILL) {
 
@@ -284,7 +295,8 @@ public class PipelinedFlowProcessor<S extends PipelinedFlowSession> implements I
                             // every time last handler makes progress - update outgoingFence
                             // TODO check if it slows down compared to publishing once-by-batch in disruptor
                             if (handlerIdx == numHandlers - 1) {
-                                releasingFence.setRelease(session.globalOffset);
+//                                releasingFence.setRelease(session.globalOffset);
+                                lastOffsetToRelease = session.globalOffset;
                             }
 
                         } else {

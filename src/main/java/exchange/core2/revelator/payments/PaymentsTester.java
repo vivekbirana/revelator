@@ -22,6 +22,7 @@ import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 public final class PaymentsTester {
@@ -60,6 +61,11 @@ public final class PaymentsTester {
         log.info("Rates: {}", currencyRates);
         final Map<Integer, Map<Integer, Double>> currencyRatesMatrix = CurrenciesGenerator.createRatesMatrix(currencyRates);
 
+        final CurrencyRateProcessor currencyRateProcessor = new CurrencyRateProcessor();
+        currencyRatesMatrix.forEach((currencyFrom, map) ->
+                map.forEach((currencyTo, rate) ->
+                        currencyRateProcessor.updateRate((short) (int) currencyFrom, (short) (int) currencyTo, rate)));
+
         final Map<Short, PaymentsApi.FeeConfig> feeLimits = prepareFeeLimits(currencyRates);
         log.info("Fee Limits: {}", feeLimits);
 //        feeLimits.forEach((k, v) -> log.debug("Fee Limit: {}:{}", k, v));
@@ -97,50 +103,53 @@ public final class PaymentsTester {
 
         final MutableInt correlationId = new MutableInt();
 
+        // set fees
+        paymentsApi.adjustFee(
+                System.nanoTime(),
+                correlationId.getAndIncrement(),
+                FEE_K,
+                feeLimits);
+
+        // set conversion rates
+        log.info("Setting {}^2 cross conversion rates ...", currencyRatesMatrix.size() - 1);
+
+        currencyRateProcessor.exportAllRates((currencyFrom, currencyTo, rate) ->
+                paymentsApi.adjustCurrencyRate(
+                        System.nanoTime(),
+                        correlationId.getAndIncrement(),
+                        (short) (int) currencyFrom,
+                        (short) (int) currencyTo,
+                        rate));
+
+        log.info("Generating {}*{} transfers ...", iterations, transfersToCreate);
+        final long generationStartMs = System.currentTimeMillis();
+        final List<List<TransferTestOrder>> allTransfers = IntStream.range(0, iterations)
+                .parallel()
+                .mapToObj(i -> {
+                    final int iterationSeed = Hashing.hash(seed + i);
+                    final List<TransferTestOrder> transfers = generateTransfers(
+                            transfersToCreate,
+                            accounts,
+                            feeLimits,
+                            currencyRateProcessor,
+                            iterationSeed);
+                    log.info("{}. Generated {} transfers (seed={})", i, transfers.size(), iterationSeed);
+                    return transfers;
+                })
+                .collect(Collectors.toList());
+        log.info("Generated all transfer in {}ms", System.currentTimeMillis() - generationStartMs);
+
+        // TODO fix maxBalances
+        log.info("Generating  maxBalances....");
+        final LongLongHashMap maxBalances = createMaxBalances(allTransfers.stream().flatMap(Collection::stream));
+        log.info("Generated {} maxBalances", maxBalances.size());
+//        maxBalances.forEachKeyValue((acc, maxbal) -> log.debug("MAX-BAL: {}={}", acc, maxbal));
 
         try (AffinityLock lock = Affinity.acquireCore()) {
 
-            // set fees
-            paymentsApi.adjustFee(
-                    System.nanoTime(),
-                    correlationId.getAndIncrement(),
-                    FEE_K,
-                    feeLimits);
-
-            // set conversion rates
-            log.info("Setting {}^2 cross conversion rates ...", currencyRatesMatrix.size() - 1);
-            currencyRatesMatrix.forEach((currencyFrom, map) ->
-                    map.forEach((currencyTo, rate) ->
-                            paymentsApi.adjustCurrencyRate(
-                                    System.nanoTime(),
-                                    correlationId.getAndIncrement(),
-                                    (short) (int) currencyFrom,
-                                    (short) (int) currencyTo,
-                                    rate)));
-
-            log.info("Generating {}*{} transfers ...", iterations, transfersToCreate);
-
-            final List<List<TransferTestOrder>> allTransfers = new ArrayList<>();
-            for (int i = 0; i < iterations; i++) {
-                final int iterationSeed = Hashing.hash(seed + i);
-                final List<TransferTestOrder> transfers = generateTransfers(
-                        transfersToCreate,
-                        accounts,
-                        feeLimits,
-                        currencyRatesMatrix,
-                        iterationSeed);
-                allTransfers.add(transfers);
-                log.info("{}. Generated {} transfers (seed={})", i, transfers.size(), iterationSeed);
-            }
-
-            // TODO fix maxBalances
-            log.info("Generating  maxBalances....");
-            final LongLongHashMap maxBalances = createMaxBalances(allTransfers.stream().flatMap(Collection::stream));
-            log.info("Generated {} maxBalances", maxBalances.size());
-//        maxBalances.forEachKeyValue((acc, maxbal) -> log.debug("MAX-BAL: {}={}", acc, maxbal));
-
             log.info("Opening {} accounts with {} positive balances...", accounts.length, maxBalances.size());
-//            log.info("Opening {} accounts with positive balances...", accounts.length);
+
+            final long openAccountStartMs = System.currentTimeMillis();
 
             for (final long account : accounts) {
 
@@ -159,12 +168,13 @@ public final class PaymentsTester {
 //        if (syncQueue.take() != controlCorrelationCounter.longValue()) {
 //            throw new IllegalStateException();
 //        }
-
-            log.info("Accounts created, starting benchmark...");
+            log.info("Accounts created in {}ms, starting benchmark...", System.currentTimeMillis() - openAccountStartMs);
 
             int transferSetIdx = 0;
 
-            for (int tps = 800_000; tps <= 7_000_000; tps += 100_000 + (rand.nextInt(4000) - 2000)) {
+            for (int tps1 = 800_000; tps1 <= 7_000_000; tps1 += 100_000) {
+
+                final int tps = tps1 + (rand.nextInt(1000) - 500);
 
 //            log.info("Adjusted {} accounts", maxBalances.size());
 
@@ -271,7 +281,7 @@ public final class PaymentsTester {
     public static List<TransferTestOrder> generateTransfers(final int transfersNum,
                                                             final long[] accounts,
                                                             final Map<Short, PaymentsApi.FeeConfig> feeLimits,
-                                                            final Map<Integer, Map<Integer, Double>> currencyRatesMatrix,
+                                                            final CurrencyRateProcessor currencyRateProcessor,
                                                             final int seed) {
 
         final List<TransferTestOrder> transfersList = new ArrayList<>();
@@ -297,10 +307,7 @@ public final class PaymentsTester {
                     ? TransferType.DESTINATION_EXACT
                     : TransferType.SOURCE_EXACT;
 
-            // TODO Use single hashtable
-            final double xRate = (orderCurrency != dstCurrency)
-                    ? currencyRatesMatrix.get((int) dstCurrency).get((int) orderCurrency)
-                    : 1.0;
+            final double xRate = currencyRateProcessor.getRate(dstCurrency, orderCurrency);
 
             final long minOrderAmount = switch (transferType) {
 

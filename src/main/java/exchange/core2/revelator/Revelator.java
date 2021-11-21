@@ -177,7 +177,7 @@ public final class Revelator implements AutoCloseable {
         if (remainingSpaceBytes < fullMessageSize) {
             // can not fit - write empty message that will be ignored by headers
 
-//            log.debug("Can not fit message beacuse msgStartSequence&mask={} fullMessageSize={} bufferSize={} : SKIP remainingSpaceBytes={}",
+//            log.debug("Can not fit message because msgStartSequence&mask={} fullMessageSize={} bufferSize={} : SKIP remainingSpaceBytes={}",
 //                    index, fullMessageSize, bufferSize, remainingSpaceBytes);
 
             // write 0 message, indicating that reader should start from buffer

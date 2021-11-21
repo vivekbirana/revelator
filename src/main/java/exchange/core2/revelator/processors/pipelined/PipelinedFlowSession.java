@@ -11,4 +11,6 @@ public class PipelinedFlowSession {
     public long correlationId;
     public int userCookie;
 
+//    public int wordsLeftInBatch;
+
 }

@@ -11,6 +11,13 @@ public final class CurrencyRateProcessor {
 
     private final IntDoubleHashMap currencyRates = new IntDoubleHashMap();
 
+    public double getRate(short currencyFrom, short currencyTo) {
+        if (currencyFrom == currencyTo) {
+            return 1.0;
+        } else {
+            return currencyRates.get(makeKey(currencyFrom, currencyTo));
+        }
+    }
 
     public long convertRate(long amountFrom, short currencyFrom, short currencyTo) {
 
@@ -46,9 +53,16 @@ public final class CurrencyRateProcessor {
         currencyRates.put(makeKey(currencyFrom, currencyTo), rate);
     }
 
-
     private int makeKey(short currencyFrom, short currencyTo) {
         return (currencyFrom << 16) + currencyTo;
     }
 
+    public void exportAllRates(RatesConsumer consumer) {
+        currencyRates.forEachKeyValue((k, rate) -> consumer.accept((short) (k >> 16), (short) (k & 0x7FFF), rate));
+    }
+
+    @FunctionalInterface
+    public interface RatesConsumer {
+        void accept(short currencyFrom, short currencyTo, double rate);
+    }
 }

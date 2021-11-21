@@ -80,7 +80,7 @@ public final class EncryptionBenchmark {
         }
 
 
-        final int totalIterations = 1_000_000;
+        final int totalIterations = 5_000_000;
         final int warmupIteration = 40_000;
 
 
@@ -115,15 +115,15 @@ public final class EncryptionBenchmark {
                 long startTime = System.nanoTime();
 
                 // produces garbage
-//                mac.reset();
-//                mac.update(messageArray, 0, 32);
-//                mac.doFinal(messageArray, 32);
-
+                mac.reset();
+                mac.update(messageArray, 0, 32);
+                mac.doFinal(messageArray, 32);
+//
 //                Sha256.hash(messageArray);
 
-                if (primesChecker.isPrime(baseNumber + i)) {
-                    primes++;
-                }
+//                if (primesChecker.isPrime(baseNumber + i)) {
+//                    primes++;
+//                }
 
 
                 final long durationNs = (System.nanoTime() - startTime);

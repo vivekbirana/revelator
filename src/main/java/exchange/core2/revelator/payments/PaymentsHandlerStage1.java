@@ -25,7 +25,10 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
     private final LongHashSet lockedAccounts;
 
+//    @Contended
+//    private boolean unpublishedSt1 = false;
 
+//    @Contended
 //    private long useless = 0;
 
     public PaymentsHandlerStage1(AccountsProcessor accountsProcessor,
@@ -203,6 +206,12 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
         if (!session.processSrc && !session.processDst) {
             // message is not related to this handler - just skip it
+
+//            if (unpublishedSt1) {
+//                unpublishedSt1 = false;
+//                st1Fence.setRelease(session.globalOffset);
+//            }
+
             return true;
         }
 
@@ -323,7 +332,18 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
         // put destination amount int buffer index, or -1 if transaction failed on source side
         resultsBuffer.set(session.bufferIndex, exchangeData);
 
-        st1Fence.setRelease(session.globalOffset);
+
+//        log.debug("session.wordsLeftInBatch={}", session.wordsLeftInBatch);
+//        if (session.wordsLeftInBatch == 0) {
+            st1Fence.setRelease(session.globalOffset);
+//            unpublishedSt1 = false;
+//        } else {
+//            unpublishedSt1 = true;
+//        }
+
+//        if (session.wordsLeftInBatch < 0) {
+//            throw new RuntimeException();
+//        }
 
         return true;
     }
