@@ -35,10 +35,11 @@ public final class SimplePaymentsHandler implements SimpleMessageHandler {
             case PaymentsApi.CMD_OPEN_ACCOUNT -> {
 
                 final long account = buffer[addr];
+                final long secret = buffer[addr + 1];
 
                 if (!accountsProcessor.accountExists(account)) {
 //            log.debug("Opening account {}", account);
-                    accountsProcessor.openNewAccount(account);
+                    accountsProcessor.openNewAccount(account, secret);
                     resultsBuffer.set(addr, (byte) 1);
                 } else {
 

@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 public final class AccountsProcessor {
 
     private final LongLongHashMap balances = new LongLongHashMap();
+    private final LongLongHashMap secrets = new LongLongHashMap();
 
     private static final Logger log = LoggerFactory.getLogger(AccountsProcessor.class);
 
@@ -192,8 +193,14 @@ public final class AccountsProcessor {
         return true;
     }
 
-    public void openNewAccount(final long account) {
+    public void openNewAccount(final long account, final long secret) {
         balances.put(account, -1);
+        secrets.put(account, secret);
+    }
+
+    public long getSecret(final long account){
+        // assume 0L is valid secret - just don't let clients using it
+        return secrets.get(account);
     }
 
     public boolean accountExists(final long account) {

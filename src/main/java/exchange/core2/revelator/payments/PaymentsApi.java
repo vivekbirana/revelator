@@ -38,9 +38,10 @@ public final class PaymentsApi {
                          final long accountDst,
                          final long amount,
                          final short currency,
-                         final TransferType transferType) {
+                         final TransferType transferType,
+                         final long[] sha256) {
 
-        final int msgSize = 4;
+        final int msgSize = 8;
         final long claimSeq = revelator.claimSingleMessage(msgSize, timestamp, correlationId, CMD_TRANSFER);
 
         final int index = (int) (claimSeq & indexMask);
@@ -50,16 +51,22 @@ public final class PaymentsApi {
         revelator.writeLongDataUnsafe(index + 2, amount);
         revelator.writeLongDataUnsafe(index + 3, ((long) currency << 8) | transferType.getCode());
 
+        revelator.writeLongDataUnsafe(index + 4, sha256[0]);
+        revelator.writeLongDataUnsafe(index + 5, sha256[1]);
+        revelator.writeLongDataUnsafe(index + 6, sha256[2]);
+        revelator.writeLongDataUnsafe(index + 7, sha256[3]);
+
         revelator.publish(claimSeq + msgSize);
     }
 
     public void openAccount(final long timestamp,
                             final long correlationId,
-                            final long account) {
+                            final long account,
+                            final long secret) {
 
 //        log.debug("OpenAcc >>> t={}", timestamp);
 
-        final int msgSize = 1;
+        final int msgSize = 2;
         final long claimSeq = revelator.claimSingleMessage(msgSize, timestamp, correlationId, CMD_OPEN_ACCOUNT);
 
 //        log.debug("claimSeq={}", claimSeq);
@@ -67,6 +74,7 @@ public final class PaymentsApi {
         final int index = (int) (claimSeq & indexMask);
 
         revelator.writeLongDataUnsafe(index, account);
+        revelator.writeLongDataUnsafe(index + 1, secret);
 
         revelator.publish(claimSeq + msgSize);
 

@@ -47,12 +47,13 @@ public final class PaymentsHandlerParallel implements SimpleMessageHandler {
                 final long accountTo = buffer[addr + 1];
                 final long amount = buffer[addr + 2];
                 final TransferType transferType = TransferType.fromByte((byte) buffer[addr + 3]);
-                processTransfer1(accountFrom, accountTo, amount,transferType,  handlerIndex);
+                processTransfer1(accountFrom, accountTo, amount, transferType, handlerIndex);
             }
 
             case PaymentsApi.CMD_OPEN_ACCOUNT -> {
                 final long account = buffer[addr];
-                processOpenAccount(account, handlerIndex);
+                final long secret = buffer[addr + 1];
+                processOpenAccount(account, secret, handlerIndex);
             }
 
             case PaymentsApi.CMD_ADJUST_BALANCE -> {
@@ -71,6 +72,7 @@ public final class PaymentsHandlerParallel implements SimpleMessageHandler {
 
 
     private void processOpenAccount(final long account,
+                                    final long secret,
                                     final int index) {
 
         if ((account & handlersMask) != handlerIndex) {
@@ -79,7 +81,7 @@ public final class PaymentsHandlerParallel implements SimpleMessageHandler {
 
         if (!accountsProcessor.accountExists(account)) {
 //            log.debug("Opening account {}", account);
-            accountsProcessor.openNewAccount(account);
+            accountsProcessor.openNewAccount(account, secret);
             resultsBuffer.set(index, (byte) 1);
         } else {
 

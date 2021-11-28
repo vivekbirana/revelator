@@ -156,9 +156,12 @@ public final class PaymentsCore {
                 CurrencyRateProcessor currencyRateProcessor = new CurrencyRateProcessor();
                 TransferFeesProcessor transferFeesProcessor = new TransferFeesProcessor(currencyRateProcessor, accountsProcessor);
 
+                final SignatureHandler signatureHandler = new SignatureHandler();
+
                 final PaymentsHandlerStage1 handlerSt1 = new PaymentsHandlerStage1(
                         accountsProcessor,
                         transferFeesProcessor,
+                        signatureHandler,
                         config.getBuffer(),
                         resultsBuffer,
                         fenceSt1,

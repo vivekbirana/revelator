@@ -78,11 +78,14 @@ public final class PaymentsTester {
 //        final List<BitSet> clients = ClientsCurrencyAccountsGenerator.generateClients(accountsToCreate, currencies, seed);
         final long[] accounts = ClientsCurrencyAccountsGenerator.generateAccountsForTransfers(accountsToCreate, currencies, AccountsProcessor::mapToAccount, 40, seed);
 
-        log.info("Generated {} accounts", accounts.length);
+        log.info("Generated {} accounts, creating secrets...", accounts.length);
 
+        final LongLongHashMap secrets = new LongLongHashMap();
+        Arrays.stream(accounts).forEach(acc -> secrets.put(acc, rand.nextLong()));
+
+        log.info("Secrets created, creating payments core ...");
         final BlockingQueue<Long> syncQueue = new LinkedBlockingQueue<>(1);
 
-        log.info("Creating payments core ...");
         final ResponseHandler responseHandler = new ResponseHandler(syncQueue);
 
 //        AffinityThreadFactory.ThreadAffinityMode affinityMode = AffinityThreadFactory.ThreadAffinityMode.AFFINITY_PHYSICAL_CORE;
@@ -132,6 +135,7 @@ public final class PaymentsTester {
                             accounts,
                             feeLimits,
                             currencyRateProcessor,
+                            secrets,
                             iterationSeed);
                     log.info("{}. Generated {} transfers (seed={})", i, transfers.size(), iterationSeed);
                     return transfers;
@@ -153,7 +157,7 @@ public final class PaymentsTester {
 
             for (final long account : accounts) {
 
-                paymentsApi.openAccount(System.nanoTime(), correlationId.getAndIncrement(), account);
+                paymentsApi.openAccount(System.nanoTime(), correlationId.getAndIncrement(), account, secrets.get(account));
                 final long amount = maxBalances.get(account);
 
                 if (amount != 0) {
@@ -226,7 +230,8 @@ public final class PaymentsTester {
                             order.destinationAccount,
                             order.amount,
                             order.currency,
-                            order.transferType);
+                            order.transferType,
+                            order.sha256);
                 }
 
                 flushAndWait(controlCorrelationCounter, syncQueue, paymentsApi, startTimeNs, END_BATCH_CODE);
@@ -282,7 +287,10 @@ public final class PaymentsTester {
                                                             final long[] accounts,
                                                             final Map<Short, PaymentsApi.FeeConfig> feeLimits,
                                                             final CurrencyRateProcessor currencyRateProcessor,
+                                                            final LongLongHashMap secrets,
                                                             final int seed) {
+
+        SignatureHandler signatureHandler = new SignatureHandler();
 
         final List<TransferTestOrder> transfersList = new ArrayList<>();
 
@@ -294,9 +302,9 @@ public final class PaymentsTester {
             final int idxTo = idxToRaw < idxFrom ? idxToRaw : idxToRaw + 1;
 
             final long srcAcc = accounts[idxFrom];
-            final long dscAcc = accounts[idxTo];
+            final long dstAcc = accounts[idxTo];
 
-            final short dstCurrency = AccountsProcessor.extractCurrency(dscAcc);
+            final short dstCurrency = AccountsProcessor.extractCurrency(dstAcc);
 
             // pick random currency (with required distribution)
             final int randomIndex = random.nextInt(accounts.length);
@@ -320,7 +328,10 @@ public final class PaymentsTester {
 
             final long orderAmount = minOrderAmount + random.nextInt(100_000) + 1L;
 
-            transfersList.add(new TransferTestOrder(srcAcc, dscAcc, orderAmount, orderCurrency, transferType));
+            final long secret = secrets.get(srcAcc);
+            final long[] signature = signatureHandler.signTransfer(srcAcc, dstAcc, orderAmount, orderCurrency, transferType, secret);
+
+            transfersList.add(new TransferTestOrder(srcAcc, dstAcc, orderAmount, orderCurrency, transferType, signature));
         }
 
         return transfersList;
@@ -418,11 +429,13 @@ public final class PaymentsTester {
         }
     }
 
+
     record TransferTestOrder(
             long sourceAccount,
             long destinationAccount,
             long amount,
             short currency,
-            TransferType transferType) {
+            TransferType transferType,
+            long[] sha256) {
     }
 }

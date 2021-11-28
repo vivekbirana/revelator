@@ -14,7 +14,7 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
     private final AccountsProcessor accountsProcessor;
     private final TransferFeesProcessor transferFeesProcessor;
-
+    private final SignatureHandler signatureHandler;
 
     private final LocalResultsLongBuffer resultsBuffer;
     private final SingleWriterFence st1Fence;
@@ -33,6 +33,7 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
     public PaymentsHandlerStage1(AccountsProcessor accountsProcessor,
                                  TransferFeesProcessor transferFeesProcessor,
+                                 SignatureHandler signatureHandler,
                                  long[] requestsBuffer,
                                  LocalResultsLongBuffer resultsBuffer,
                                  SingleWriterFence st1Fence,
@@ -42,6 +43,7 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
         this.accountsProcessor = accountsProcessor;
         this.transferFeesProcessor = transferFeesProcessor;
+        this.signatureHandler = signatureHandler;
         this.requestsBuffer = requestsBuffer;
         this.resultsBuffer = resultsBuffer;
         this.st1Fence = st1Fence;
@@ -101,22 +103,32 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
     private boolean processOpenAccount(final TransferSession session) {
 
         final long account = requestsBuffer[session.bufferIndex];
+        final long secret = requestsBuffer[session.bufferIndex + 1];
 
         if ((account & handlersMask) != handlerIndex) {
             return true;
         }
 
-        // lock is not needed because St2 can not change account state (opened/closed)
+        final byte resultCode;
+
+        // NOTE: lock is not needed because St2 can not change account state (opened/closed)
 
         if (accountsProcessor.accountNotExists(account)) {
 //            log.debug("Opening account {}", account);
-            accountsProcessor.openNewAccount(account);
-            resultsBuffer.set(session.bufferIndex, (byte) 1);
+            if (secret != 0L) {
+                accountsProcessor.openNewAccount(account, secret);
+                resultCode = (byte) 1;
+            } else {
+                log.warn("Can not use 0 as secret for account {} !", account);
+                resultCode = (byte) -2;
+            }
         } else {
 
             log.warn("Account {} already exists!", account);
-            resultsBuffer.set(session.bufferIndex, (byte) -1);
+            resultCode = (byte) -1;
         }
+
+        resultsBuffer.set(session.bufferIndex, resultCode);
         st1Fence.setRelease(session.globalOffset);
 
         return true;
@@ -251,34 +263,39 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
                 return false;
             }
 
-            // no St2-revert scenario possible for local transfer
+            if (checkTransferSignature(session, orderAmount, transferType, orderCurrency)) {
 
-            final boolean withdrawalSuccessful = transferFeesProcessor.performWithdrawal(
-                    session,
-                    transferType,
-                    accountSrc,
-                    accountDst,
-                    orderAmount,
-                    orderCurrency);
+                // no St2-revert scenario possible for local transfer
 
-            if (withdrawalSuccessful) {
+                final boolean withdrawalSuccessful = transferFeesProcessor.performWithdrawal(
+                        session,
+                        transferType,
+                        accountSrc,
+                        accountDst,
+                        orderAmount,
+                        orderCurrency);
 
-                final boolean success = accountsProcessor.deposit(accountDst, session.amountDst);
+                if (withdrawalSuccessful) {
 
-                if (success) {
+                    final boolean success = accountsProcessor.deposit(accountDst, session.amountDst);
 
-                    exchangeData = 0L;
+                    if (success) {
+
+                        exchangeData = 0L;
+
+                    } else {
+                        // revert all changes
+                        accountsProcessor.balanceCorrection(accountSrc, session.amountSrc);
+                        exchangeData = -1L;
+                    }
 
                 } else {
-                    // revert all changes
-                    accountsProcessor.balanceCorrection(accountSrc, session.amountSrc);
                     exchangeData = -1L;
                 }
 
             } else {
                 exchangeData = -1L;
             }
-
 
         } else if (session.processSrc) {
             // process only Source account
@@ -295,16 +312,20 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
             session.treasureAmountSrc = 0L;
             session.treasureAmountDst = 0L;
 
-            session.localPartSucceeded = transferFeesProcessor.performWithdrawal(
-                    session,
-                    transferType,
-                    accountSrc,
-                    accountDst,
-                    orderAmount,
-                    orderCurrency);
+            if (checkTransferSignature(session, orderAmount, transferType, orderCurrency)) {
 
-            exchangeData = session.localPartSucceeded ? session.amountDst : -1;
+                session.localPartSucceeded = transferFeesProcessor.performWithdrawal(
+                        session,
+                        transferType,
+                        accountSrc,
+                        accountDst,
+                        orderAmount,
+                        orderCurrency);
 
+                exchangeData = session.localPartSucceeded ? session.amountDst : -1;
+            }else{
+                exchangeData = -1L;
+            }
 
         } else {
             // process only Destination account
@@ -335,7 +356,7 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 
 //        log.debug("session.wordsLeftInBatch={}", session.wordsLeftInBatch);
 //        if (session.wordsLeftInBatch == 0) {
-            st1Fence.setRelease(session.globalOffset);
+        st1Fence.setRelease(session.globalOffset);
 //            unpublishedSt1 = false;
 //        } else {
 //            unpublishedSt1 = true;
@@ -346,6 +367,23 @@ public final class PaymentsHandlerStage1 implements PipelinedStageHandler<Transf
 //        }
 
         return true;
+    }
+
+    private boolean checkTransferSignature(TransferSession session,
+                                           long orderAmount,
+                                           TransferType transferType,
+                                           short orderCurrency) {
+
+        final long secret = accountsProcessor.getSecret(session.accountSrc);
+        return signatureHandler.checkSignatureTransfer(
+                session.accountSrc,
+                session.accountDst,
+                orderAmount,
+                orderCurrency,
+                transferType,
+                secret,
+                requestsBuffer,
+                session.bufferIndex + 4);
     }
 
     private boolean processControlCurrencyRate(final TransferSession session) {
