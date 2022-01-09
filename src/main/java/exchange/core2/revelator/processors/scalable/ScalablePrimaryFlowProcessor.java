@@ -32,13 +32,14 @@ public final class ScalablePrimaryFlowProcessor implements IFlowProcessor {
 
     private volatile PrimaryState actualState = PrimaryState.CENTRALIZED;
 
-
     public ScalablePrimaryFlowProcessor(final ScalableMessageHandler[] handlers,
+                                        final ScalableSecondaryFlowProcessor[] processors,
                                         final ScalableShardClassifier shardClassifier,
                                         final IFence inboundFence,
                                         final RevelatorConfig config) {
 
         this.handlers = handlers;
+        this.secondaryProcessors = processors;
         this.shardClassifier = shardClassifier;
         this.inboundFence = inboundFence;
         this.indexMask = config.getIndexMask();
@@ -64,18 +65,20 @@ public final class ScalablePrimaryFlowProcessor implements IFlowProcessor {
 
                     // no new messages + still in sharded mode => signal secondary processors to initiate stop
                     for (final ScalableSecondaryFlowProcessor p : secondaryProcessors) {
-                        p.deactivate(positionSeq);
+                        //p.deactivate(positionSeq);
                     }
                 }
                 Thread.onSpinWait();
             }
 
-            if (actualState == PrimaryState.CENTRALIZED && availableSeq - positionSeq > 8192) {
+
+            // check if batch is big enough to activate secondary processors
+            if (actualState == PrimaryState.CENTRALIZED && availableSeq - positionSeq > 8192) { // TODO could be just single large message
                 // switch to sharded mode
                 actualState = PrimaryState.SHARDED;
 
                 for (final ScalableSecondaryFlowProcessor p : secondaryProcessors) {
-                    p.activate(positionSeq, availableSeq);
+                    p.processRange(positionSeq, availableSeq);
                 }
 
                 //final int index = (int) (positionSeq & indexMask);
@@ -119,13 +122,14 @@ public final class ScalablePrimaryFlowProcessor implements IFlowProcessor {
                             + " unexpected " + (indexMsg + payloadSize - bufferSize) + " bytes");
                 }
 
+                // check which for which handlers to execute
                 final int shard = shardClassifier.getShardMessage(buffer, indexMsg, payloadSize, msgType);
 
-                if (shard != SHARD_NONE) {
+                if (shard != ScalableShardClassifier.SHARD_NONE) {
 
                     final long timestamp = buffer[index + 1];
 
-                    if (shard == SHARD_ALL) {
+                    if (shard == ScalableShardClassifier.SHARD_ALL) {
 
                         // broadcast to each handler
                         for (final ScalableMessageHandler handler : handlers) {
@@ -139,7 +143,6 @@ public final class ScalablePrimaryFlowProcessor implements IFlowProcessor {
                     } else {
 
                         // broadcast to one handler
-
                         final ScalableMessageHandler handler = handlers[shard];
 
                         try {
@@ -177,7 +180,7 @@ public final class ScalablePrimaryFlowProcessor implements IFlowProcessor {
 
     public enum PrimaryState {
         CENTRALIZED,
-//        SHARDED_PREPARE,
+        //        SHARDED_PREPARE,
         SHARDED,
         CONSOLIDATING,
     }
