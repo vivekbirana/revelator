@@ -47,4 +47,14 @@ public final class CmdRaftVoteRequest implements RpcRequest {
 
         return new CmdRaftVoteRequest(term, leaderId, prevLogIndex, prevLogTerm);
     }
+
+    @Override
+    public String toString() {
+        return "CmdRaftVoteRequest{" +
+                "term=" + term +
+                ", candidateId=" + candidateId +
+                ", lastLogIndex=" + lastLogIndex +
+                ", lastLogTerm=" + lastLogTerm +
+                '}';
+    }
 }

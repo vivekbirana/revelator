@@ -1,5 +1,6 @@
 package exchange.core2.revelator.raft;
 
+import org.agrona.PrintBufferUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,6 +14,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 
 public class RpcService implements AutoCloseable {
@@ -25,11 +27,13 @@ public class RpcService implements AutoCloseable {
     private final int serverPort;
     private final int serverNodeId;
     private final BiFunction<Integer, RpcRequest, RpcResponse> handler;
+    private final BiConsumer<Integer, RpcResponse> handlerResponses;
 
     private volatile boolean active = true;
 
     public RpcService(Map<Integer, String> remoteNodes,
                       BiFunction<Integer, RpcRequest, RpcResponse> handler,
+                      BiConsumer<Integer, RpcResponse> handlerResponses,
                       int serverNodeId) {
 
         final Map<Integer, RemoteUdpSocket> socketMap = new HashMap<>();
@@ -54,6 +58,7 @@ public class RpcService implements AutoCloseable {
 
         this.socketMap = socketMap;
         this.handler = handler;
+        this.handlerResponses = handlerResponses;
         this.serverPort = socketMap.get(serverNodeId).port;
         this.serverNodeId = serverNodeId;
 
@@ -69,9 +74,9 @@ public class RpcService implements AutoCloseable {
 
         try (final DatagramSocket serverSocket = new DatagramSocket(serverPort)) {
 
-            logger.info("Listening on UDP {}:{}", InetAddress.getLocalHost().getHostAddress(), serverPort);
+            logger.info("Listening at UDP {}:{}", InetAddress.getLocalHost().getHostAddress(), serverPort);
 
-            final byte[] receiveData = new byte[256];
+            final byte[] receiveData = new byte[256]; // TODO set proper value
 
             final DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
 
@@ -79,7 +84,6 @@ public class RpcService implements AutoCloseable {
 
                 serverSocket.receive(receivePacket);
                 // String sentence = new String(receivePacket.getData(), 0, receivePacket.getLength());
-//                logger.debug("RECEIVED: " + sentence);
 
 
                 final ByteBuffer bb = ByteBuffer.wrap(receivePacket.getData(), 0, receivePacket.getLength());
@@ -88,8 +92,11 @@ public class RpcService implements AutoCloseable {
                 final int messageType = bb.getInt();
                 final long correlationId = bb.getLong();
 
+                logger.debug("RECEIVED from {} mt={}: {}", nodeId, messageType, PrintBufferUtil.hexDump(receivePacket.getData(), 0, receivePacket.getLength()));
+
+
                 if (messageType < 0) {
-                    processResponse(receivePacket, bb, messageType, correlationId);
+                    processResponse(receivePacket, bb, nodeId, messageType, correlationId);
 
                 } else {
                     processRequest(receivePacket, bb, nodeId, messageType, correlationId);
@@ -111,13 +118,17 @@ public class RpcService implements AutoCloseable {
 
             final CmdRaftAppendEntries request = CmdRaftAppendEntries.create(bb);
             final RpcResponse response = handler.apply(nodeId, request);
-            sendResponse(nodeId, correlationId, response);
+            if (response != null) {
+                sendResponse(nodeId, correlationId, response);
+            }
 
         } else if (messageType == RpcRequest.REQUEST_VOTE) {
 
             final CmdRaftVoteRequest request = CmdRaftVoteRequest.create(bb);
             final RpcResponse response = handler.apply(nodeId, request);
-            sendResponse(nodeId, correlationId, response);
+            if (response != null) {
+                sendResponse(nodeId, correlationId, response);
+            }
 
         } else {
             logger.warn("Unsupported response type={} from {} correlationId={}",
@@ -125,28 +136,29 @@ public class RpcService implements AutoCloseable {
         }
     }
 
-    private void processResponse(DatagramPacket receivePacket, ByteBuffer bb, int messageType, long correlationId) {
+    private void processResponse(DatagramPacket receivePacket, ByteBuffer bb, int nodeId, int messageType, long correlationId) {
+
         final CompletableFuture<RpcResponse> future = futureMap.remove(correlationId);
 
-        if (future != null) {
+        if (messageType == RpcResponse.RESPONSE_APPEND_ENTRIES) {
 
-            if (messageType == RpcResponse.RESPONSE_APPEND_ENTRIES) {
-
-                future.complete(CmdRaftAppendEntriesResponse.create(bb));
-
-            } else if (messageType == RpcResponse.RESPONSE_VOTE) {
-
-                future.complete(CmdRaftVoteResponse.create(bb));
-
-            } else {
-                logger.warn("Unsupported response type={} from {} correlationId={}",
-                        messageType, receivePacket.getAddress().getHostAddress(), correlationId);
+            final CmdRaftAppendEntriesResponse r = CmdRaftAppendEntriesResponse.create(bb);
+            if (future != null) {
+                future.complete(r);
             }
+            handlerResponses.accept(nodeId, r);
 
+        } else if (messageType == RpcResponse.RESPONSE_VOTE) {
+
+            final CmdRaftVoteResponse r = CmdRaftVoteResponse.create(bb);
+            if (future != null) {
+                future.complete(r);
+            }
+            handlerResponses.accept(nodeId, r);
 
         } else {
-            logger.warn("Unexpected (or duplicate) response from {} type={} correlationId={}",
-                    receivePacket.getAddress().getHostAddress(), messageType, correlationId);
+            logger.warn("Unsupported response type={} from {} correlationId={}",
+                    messageType, receivePacket.getAddress().getHostAddress(), correlationId);
         }
     }
 
@@ -163,7 +175,7 @@ public class RpcService implements AutoCloseable {
     }
 
 
-    public CompletableFuture<RpcResponse> callRpcSync(RpcRequest request, int nodeId) {
+    public CompletableFuture<RpcResponse> callRpcSync(RpcRequest request, int toNodeId) {
 
         final long correlationId = correlationIdCounter.incrementAndGet();
 
@@ -173,13 +185,13 @@ public class RpcService implements AutoCloseable {
         final byte[] array = new byte[64];
         ByteBuffer bb = ByteBuffer.wrap(array);
 
-        bb.putInt(nodeId);
+        bb.putInt(serverNodeId);
         bb.putInt(request.getMessageType());
         bb.putLong(correlationId);
 
         request.serialize(bb);
 
-        send(nodeId, array, bb.position());
+        send(toNodeId, array, bb.position());
 
         return future;
     }

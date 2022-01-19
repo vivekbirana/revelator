@@ -32,4 +32,12 @@ public final class CmdRaftAppendEntriesResponse implements RpcResponse {
         final boolean success = bb.get() == 1;
         return new CmdRaftAppendEntriesResponse(term, success);
     }
+
+    @Override
+    public String toString() {
+        return "CmdRaftAppendEntriesResponse{" +
+                "term=" + term +
+                ", success=" + success +
+                '}';
+    }
 }

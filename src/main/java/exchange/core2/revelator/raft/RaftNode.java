@@ -4,22 +4,18 @@ package exchange.core2.revelator.raft;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
-import java.net.InetAddress;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.concurrent.CompletableFuture;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
 
 public class RaftNode<T extends RaftMessage> {
 
     private static final Logger logger = LoggerFactory.getLogger(RaftNode.class);
 
-    public static final int HEARTBEAT_TIMEOUT_MS = 2000;
+    public static final int HEARTBEAT_TIMEOUT_MS = 2000 + (int) (Math.random() * 500);
+    public static final int HEARTBEAT_LEADER_RATE_MS = 1000;
+    public static final int ELECTION_TIMEOUT_MS = 3000;
 
     public static final int CLUSTER_SIZE = 3;
     public static final int VOTES_REQUIRED = 2;
@@ -57,49 +53,132 @@ public class RaftNode<T extends RaftMessage> {
 
     /* ********************************************* */
 
-    private final Timer timer = new Timer("AppendTimer");
+    private final int currentNodeId;
+    private final int[] otherNodes;
 
+    private final RpcService rpcService;
+
+    private Timer appendTimer;
+//    private Timer electionTimer;
+
+    private ScheduledExecutorService heartbeatLeaderExecutor;
 
     public static void main(String[] args) {
-        new RaftNode().run(3778);
+
+        final int thisNodeId = Integer.parseInt(args[0]);
+
+        new RaftNode(thisNodeId);
     }
 
     public RaftNode(int thisNodeId) {
+
+        // localhost:3778, localhost:3779, localhost:3780
+        final Map<Integer, String> remoteNodes = Map.of(
+                0, "localhost:3778",
+                1, "localhost:3779",
+                2, "localhost:3780");
+
+        this.currentNodeId = thisNodeId;
+
+        this.otherNodes = remoteNodes.keySet().stream().mapToInt(x -> x).filter(nodeId -> nodeId != thisNodeId).toArray();
+
+
+        final BiFunction<Integer, RpcRequest, RpcResponse> handler = (fromNodeId, req) -> {
+            logger.debug("INCOMING REQ {} >>> {}", fromNodeId, req);
+            if (req instanceof CmdRaftVoteRequest) {
+                synchronized (this) {
+                    logger.debug("votedFor={}", votedFor);
+                    if (votedFor == -1) {
+                        logger.debug("VOTE GRANTED for {}", fromNodeId);
+                        votedFor = fromNodeId;
+                        return new CmdRaftVoteResponse(currentTerm, true);
+                    } else {
+                        return new CmdRaftVoteResponse(currentTerm, false);
+                    }
+                }
+            }
+            if (req instanceof CmdRaftAppendEntries) {
+                CmdRaftAppendEntries appendEntriesCmd = (CmdRaftAppendEntries) req;
+
+                synchronized (this) {
+
+                    if (currentState == RaftNodeState.CANDIDATE) {
+                        /* While waiting for votes, a candidate may receive an AppendEntries RPC from another server claiming to be leader.
+                        If the leader’s term (included in its RPC) is at least as large as the candidate’s current term,
+                        then the candidate recognizes the leader as legitimate and returns to follower state.
+                        If the term in the RPC is smaller than the candidate’s current term,
+                        then the candidate rejects the RPC and continues in candidate state. */
+                        if (appendEntriesCmd.term < currentTerm) {
+                            logger.debug("Ignoring leader with older term {} (current={}", appendEntriesCmd.term, currentTerm);
+                        } else {
+                            logger.debug("Stop being candidate - switching to follower");
+                            currentState = RaftNodeState.FOLLOWER;
+                            votedFor = -1;
+                            resetFollowerAppendTimer();
+                        }
+
+                    } else {
+
+                        if (appendEntriesCmd.term < currentTerm) {
+                            // TODO reply that leader is sending bs
+                        }
+                        if (appendEntriesCmd.term >= currentTerm) {
+                            if (appendEntriesCmd.term > currentTerm) {
+                                logger.info("Update term {}->{}", currentTerm, appendEntriesCmd.term);
+                                currentTerm = appendEntriesCmd.term;
+                            }
+
+                            resetFollowerAppendTimer();
+                        }
+                    }
+                }
+            }
+
+            return null;
+        };
+
+        final BiConsumer<Integer, RpcResponse> handlerResponses = (fromNodeId, resp) -> {
+            logger.debug("INCOMING RESP {} >>> {}", fromNodeId, resp);
+        };
+
+        // todo remove from constructor
+        rpcService = new RpcService(remoteNodes, handler, handlerResponses, thisNodeId);
+
+        logger.info("HEARTBEAT_TIMEOUT_MS={}", HEARTBEAT_TIMEOUT_MS);
+        logger.info("ELECTION_TIMEOUT_MS={}", ELECTION_TIMEOUT_MS);
+
         logger.info("Starting node {} as follower...", thisNodeId);
         resetFollowerAppendTimer();
     }
 
-    public void run(int port) {
-        try (final DatagramSocket serverSocket = new DatagramSocket(port)) {
-            final byte[] receiveData = new byte[8];
-            String sendString = "polo";
-            final byte[] sendData = sendString.getBytes(StandardCharsets.UTF_8);
-
-            logger.info("Listening on udp:{}:{}", InetAddress.getLocalHost().getHostAddress(), port);
-            final DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
-
-            while (true) {
-                serverSocket.receive(receivePacket);
-                String sentence = new String(receivePacket.getData(), 0,
-                        receivePacket.getLength());
-                logger.debug("RECEIVED: " + sentence);
-
-
-                DatagramPacket sendPacket = new DatagramPacket(
-                        sendData,
-                        sendData.length,
-                        receivePacket.getAddress(),
-                        receivePacket.getPort());
-
-                serverSocket.send(sendPacket);
-            }
-        } catch (IOException ex) {
-            System.out.println(ex);
-        }
-    }
-
-
-
+//    public void run(int port) {
+//        try (final DatagramSocket serverSocket = new DatagramSocket(port)) {
+//            final byte[] receiveData = new byte[8];
+//            String sendString = "polo";
+//            final byte[] sendData = sendString.getBytes(StandardCharsets.UTF_8);
+//
+//            logger.info("Listening on udp:{}:{}", InetAddress.getLocalHost().getHostAddress(), port);
+//            final DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
+//
+//            while (true) {
+//                serverSocket.receive(receivePacket);
+//                String sentence = new String(receivePacket.getData(), 0,
+//                        receivePacket.getLength());
+//                logger.debug("RECEIVED: " + sentence);
+//
+//
+//                DatagramPacket sendPacket = new DatagramPacket(
+//                        sendData,
+//                        sendData.length,
+//                        receivePacket.getAddress(),
+//                        receivePacket.getPort());
+//
+//                serverSocket.send(sendPacket);
+//            }
+//        } catch (IOException ex) {
+//            System.out.println(ex);
+//        }
+//    }
 
 
     /**
@@ -171,12 +250,16 @@ public class RaftNode<T extends RaftMessage> {
     }
 
 
-
     private void checkTerm(int term) {
         // All servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (5.1)
         if (term > currentTerm) {
             logger.info("Newer term={} received from new leader, switching to FOLLOWER", term);
             currentTerm = term;
+
+            if (currentState == RaftNodeState.LEADER) {
+                heartbeatLeaderExecutor.shutdown();
+            }
+
             currentState = RaftNodeState.FOLLOWER;
         }
     }
@@ -188,12 +271,13 @@ public class RaftNode<T extends RaftMessage> {
 
     }
 
-    private void resetFollowerAppendTimer(){
+    private synchronized void resetFollowerAppendTimer() {
 
         logger.debug("reset append timer");
 
-        timer.cancel();
-
+        if (appendTimer != null) {
+            appendTimer.cancel();
+        }
         final TimerTask task = new TimerTask() {
             @Override
             public void run() {
@@ -201,12 +285,26 @@ public class RaftNode<T extends RaftMessage> {
             }
         };
 
-        timer.schedule(task, HEARTBEAT_TIMEOUT_MS);
+        appendTimer = new Timer();
+        appendTimer.schedule(task, HEARTBEAT_TIMEOUT_MS);
     }
 
-    private synchronized void appendTimeout(){
+    /**
+     * To begin an election, a follower increments its current
+     * term and transitions to candidate state. It then votes for
+     * itself and issues RequestVote RPCs in parallel to each of
+     * the other servers in the cluster. A candidate continues in
+     * this state until one of three things happens:
+     * (a) it wins the election,
+     * (b) another server establishes itself as leader, or
+     * (c) a period of time goes by with no winner.
+     */
+    private synchronized void appendTimeout() {
 
-        logger.info("heartbeat timeout - switching to CANDIDATE");
+        if (currentState == RaftNodeState.LEADER) {
+            heartbeatLeaderExecutor.shutdown();
+        }
+
         currentState = RaftNodeState.CANDIDATE;
 
         // On conversion to candidate, start election:
@@ -214,12 +312,95 @@ public class RaftNode<T extends RaftMessage> {
         // - Vote for self
         // - Reset election timer
         // - Send RequestVote RPCs to all other servers
-        currentTerm ++;
+        currentTerm++;
 
+        logger.info("heartbeat timeout - switching to CANDIDATE, term={}", currentTerm);
 
+        votedFor = currentNodeId;
 
+        final TimerTask task = new TimerTask() {
+            @Override
+            public void run() {
+                electionTimeout();
+            }
+        };
+
+        final CmdRaftVoteRequest voteReq = new CmdRaftVoteRequest(
+                currentTerm,
+                currentNodeId,
+                lastApplied,
+                429384628); // TODO extract from log!
+
+        try {
+
+            final CompletableFuture<RpcResponse> future0 = rpcService.callRpcSync(voteReq, otherNodes[0]);
+            final CompletableFuture<RpcResponse> future1 = rpcService.callRpcSync(voteReq, otherNodes[1]);
+
+            final CompletableFuture<Object> objectCompletableFuture = CompletableFuture.anyOf(future0, future1);
+            final CmdRaftVoteResponse response = (CmdRaftVoteResponse) objectCompletableFuture.get(ELECTION_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+
+            /*
+            A candidate wins an election if it receives votes from
+            a majority of the servers in the full cluster for the same
+            term. Each server will vote for at most one candidate in a
+            given term, on a first-come-first-served basis
+            (note: Section 5.4 adds an additional restriction on votes)
+             */
+
+            if (response.voteGranted) {
+                logger.info("One vote, becoming a LEADER!");
+                currentState = RaftNodeState.LEADER;
+
+                heartbeatLeaderExecutor = Executors.newSingleThreadScheduledExecutor();
+                heartbeatLeaderExecutor.scheduleAtFixedRate(
+                        () -> {
+                            logger.info("Sending heartbeats");
+                            final CmdRaftAppendEntries heartBeatReq = new CmdRaftAppendEntries(
+                                    currentTerm,
+                                    currentNodeId,
+                                    lastApplied,
+                                    429384628,
+                                    List.of(),
+                                    commitIndex);
+                            rpcService.callRpcSync(heartBeatReq, otherNodes[0]);
+                            rpcService.callRpcSync(heartBeatReq, otherNodes[1]);
+                        },
+                        0,
+                        HEARTBEAT_LEADER_RATE_MS,
+                        TimeUnit.MILLISECONDS);
+
+                // TODO init
+                // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
+//                private final long[] nextIndex = new long[3];
+
+                // for each server, index of the highest log entry known to be replicated on server (initialized to 0, increases monotonically)
+//                private final long[] matchIndex = new long[3];
+
+            } else {
+                logger.info("Vote not granted");
+                // TODO maybe second one granted his vote ?
+            }
+
+        } catch (TimeoutException ex) {
+            logger.warn("Vote timeout");
+        } catch (Exception ex) {
+            logger.warn("Exception while collecting votes", ex);
+        }
+
+        // did not win election
+        if (currentState == RaftNodeState.CANDIDATE) {
+            currentState = RaftNodeState.FOLLOWER;
+            votedFor = -1;
+            resetFollowerAppendTimer();
+        }
+
+//        electionTimer = new Timer();
+//        electionTimer.schedule(task, ELECTION_TIMEOUT_MS);
     }
 
+    private synchronized void electionTimeout() {
+        logger.info("election timeout - switching to CANDIDATE");
+    }
 
     public enum RaftNodeState {
         FOLLOWER,

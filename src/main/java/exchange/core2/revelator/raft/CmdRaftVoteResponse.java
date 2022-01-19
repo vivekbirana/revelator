@@ -35,4 +35,11 @@ public final class CmdRaftVoteResponse implements RpcResponse {
         return new CmdRaftVoteResponse(term, voteGranted);
     }
 
+    @Override
+    public String toString() {
+        return "CmdRaftVoteResponse{" +
+                "term=" + term +
+                ", voteGranted=" + voteGranted +
+                '}';
+    }
 }

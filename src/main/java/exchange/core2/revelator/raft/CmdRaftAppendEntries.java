@@ -57,4 +57,16 @@ public final class CmdRaftAppendEntries implements RpcRequest {
 
         return  new CmdRaftAppendEntries(term, leaderId, prevLogIndex, prevLogTerm, List.of(), leaderCommit);
     }
+
+    @Override
+    public String toString() {
+        return "CmdRaftAppendEntries{" +
+                "term=" + term +
+                ", leaderId=" + leaderId +
+                ", prevLogIndex=" + prevLogIndex +
+                ", prevLogTerm=" + prevLogTerm +
+                ", entries=" + entries +
+                ", leaderCommit=" + leaderCommit +
+                '}';
+    }
 }
