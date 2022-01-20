@@ -5,7 +5,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 
@@ -59,7 +62,7 @@ public class RaftNode<T extends RaftMessage> {
     private final RpcService rpcService;
 
     private Timer appendTimer;
-//    private Timer electionTimer;
+    private Timer electionTimer;
 
     private ScheduledExecutorService heartbeatLeaderExecutor;
 
@@ -85,22 +88,47 @@ public class RaftNode<T extends RaftMessage> {
 
         final BiFunction<Integer, RpcRequest, RpcResponse> handler = (fromNodeId, req) -> {
             logger.debug("INCOMING REQ {} >>> {}", fromNodeId, req);
-            if (req instanceof CmdRaftVoteRequest) {
-                synchronized (this) {
-                    logger.debug("votedFor={}", votedFor);
-                    if (votedFor == -1) {
-                        logger.debug("VOTE GRANTED for {}", fromNodeId);
-                        votedFor = fromNodeId;
-                        return new CmdRaftVoteResponse(currentTerm, true);
-                    } else {
-                        return new CmdRaftVoteResponse(currentTerm, false);
-                    }
-                }
-            }
-            if (req instanceof CmdRaftAppendEntries) {
-                CmdRaftAppendEntries appendEntriesCmd = (CmdRaftAppendEntries) req;
+
+            if (req instanceof CmdRaftVoteRequest voteRequest) {
 
                 synchronized (this) {
+                    /* Receiver implementation:
+                    1. Reply false if term < currentTerm (§5.1)
+                    2. If votedFor is null or candidateId, and candidate’s log is at
+                    least as up-to-date as receiver’s log, grant vote (5.2, 5.4) */
+
+                    if (voteRequest.term < currentTerm) {
+                        logger.debug("Reject vote for {} - term is old", fromNodeId);
+                        return new CmdRaftVoteResponse(currentTerm, false);
+                    }
+
+                    if (voteRequest.term > currentTerm) {
+                        logger.debug("received newer term {} with vote request", voteRequest.term);
+                        currentTerm = voteRequest.term;
+                        switchToFollower();
+                    }
+
+                    if (votedFor != -1 && votedFor != currentNodeId) {
+                        logger.debug("Reject vote for {} - already voted for {}", fromNodeId, votedFor);
+                        return new CmdRaftVoteResponse(currentTerm, false);
+                    }
+
+                    logger.debug("VOTE GRANTED for {}", fromNodeId);
+                    votedFor = fromNodeId;
+
+                    return new CmdRaftVoteResponse(currentTerm, true);
+
+                }
+
+            }
+            if (req instanceof CmdRaftAppendEntries appendEntriesCmd) {
+
+                synchronized (this) {
+
+                    if (appendEntriesCmd.term < currentTerm) {
+                        logger.debug("Ignoring leader with older term {} (current={}", appendEntriesCmd.term, currentTerm);
+                        return new CmdRaftAppendEntriesResponse(currentTerm, false);
+                    }
 
                     if (currentState == RaftNodeState.CANDIDATE) {
                         /* While waiting for votes, a candidate may receive an AppendEntries RPC from another server claiming to be leader.
@@ -108,28 +136,23 @@ public class RaftNode<T extends RaftMessage> {
                         then the candidate recognizes the leader as legitimate and returns to follower state.
                         If the term in the RPC is smaller than the candidate’s current term,
                         then the candidate rejects the RPC and continues in candidate state. */
-                        if (appendEntriesCmd.term < currentTerm) {
-                            logger.debug("Ignoring leader with older term {} (current={}", appendEntriesCmd.term, currentTerm);
-                        } else {
-                            logger.debug("Stop being candidate - switching to follower");
-                            currentState = RaftNodeState.FOLLOWER;
-                            votedFor = -1;
-                            resetFollowerAppendTimer();
-                        }
+
+                        switchToFollower();
+
+                        electionTimer.cancel();
+
 
                     } else {
 
-                        if (appendEntriesCmd.term < currentTerm) {
-                            // TODO reply that leader is sending bs
-                        }
-                        if (appendEntriesCmd.term >= currentTerm) {
-                            if (appendEntriesCmd.term > currentTerm) {
-                                logger.info("Update term {}->{}", currentTerm, appendEntriesCmd.term);
-                                currentTerm = appendEntriesCmd.term;
-                            }
+                        // TODO add records
 
-                            resetFollowerAppendTimer();
+                        if (appendEntriesCmd.term > currentTerm) {
+                            logger.info("Update term {}->{}", currentTerm, appendEntriesCmd.term);
+                            currentTerm = appendEntriesCmd.term;
                         }
+
+                        resetFollowerAppendTimer();
+
                     }
                 }
             }
@@ -138,7 +161,22 @@ public class RaftNode<T extends RaftMessage> {
         };
 
         final BiConsumer<Integer, RpcResponse> handlerResponses = (fromNodeId, resp) -> {
+
             logger.debug("INCOMING RESP {} >>> {}", fromNodeId, resp);
+
+                /* A candidate wins an election if it receives votes from
+                a majority of the servers in the full cluster for the same
+                term. Each server will vote for at most one candidate in a
+                given term, on a first-come-first-served basis
+                (note: Section 5.4 adds an additional restriction on votes) */
+
+            if (resp instanceof final CmdRaftVoteResponse voteResponse) {
+                synchronized (this) {
+                    if (currentState == RaftNodeState.CANDIDATE && voteResponse.voteGranted && voteResponse.term == currentTerm) {
+                        switchToLeader();
+                    }
+                }
+            }
         };
 
         // todo remove from constructor
@@ -149,6 +187,26 @@ public class RaftNode<T extends RaftMessage> {
 
         logger.info("Starting node {} as follower...", thisNodeId);
         resetFollowerAppendTimer();
+    }
+
+    private void switchToFollower() {
+
+        if (currentState == RaftNodeState.LEADER) {
+            logger.debug("shutdown heartbeats");
+            heartbeatLeaderExecutor.shutdown();
+        }
+
+        if (currentState == RaftNodeState.CANDIDATE && electionTimer != null) {
+            logger.debug("cancelled elevtion timer");
+            electionTimer.cancel();
+        }
+
+        if (currentState != RaftNodeState.FOLLOWER) {
+            logger.debug("Switching to follower (reset votedFor, start append timer)");
+            currentState = RaftNodeState.FOLLOWER;
+            votedFor = -1;
+            resetFollowerAppendTimer();
+        }
     }
 
 //    public void run(int port) {
@@ -181,88 +239,88 @@ public class RaftNode<T extends RaftMessage> {
 //    }
 
 
-    /**
-     * Receiver implementation:<p>
-     * 1. Reply false if term < currentTerm (5.1)<p>
-     * 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm (5.3)<p>
-     * 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (5.3)<p>
-     * 4. Append any new entries not already in the log<p>
-     * 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)<p>
-     */
-    public synchronized CmdRaftAppendEntriesResponse appendEntries(CmdRaftAppendEntries cmd) {
-
-        // 1. Reply false if term < currentTerm
-        // If the term in the RPC is smaller than the candidate’s current term, then the candidate rejects the RPC and continues in candidate state.
-        if (cmd.term < currentTerm) {
-            logger.debug("term < currentTerm");
-            return new CmdRaftAppendEntriesResponse(currentTerm, false);
-        }
-
-        // If the leader’s term (included in its RPC) is at least as large as the candidate’s current term, then the candidate
-        // recognizes the leader as legitimate and returns to follower state. I
-        checkTerm(cmd.term);
-
-        // 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-        if (cmd.prevLogIndex >= log.size() || log.get((int) cmd.prevLogIndex).term != cmd.prevLogTerm) {
-            logger.debug("log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm");
-            return new CmdRaftAppendEntriesResponse(currentTerm, false);
-        }
-
-        // TODO 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (5.3)
-
-        // Append any new entries not already in the log
-
-        resetFollowerAppendTimer();
-
-        // If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-        if (cmd.leaderCommit > commitIndex) {
-            commitIndex = Math.min(cmd.leaderCommit, log.size() - 1);
-        }
-
-        return new CmdRaftAppendEntriesResponse(currentTerm, true);
-    }
-
-    /**
-     * Receiver implementation:
-     * 1. Reply false if term < currentTerm (5.1)
-     * 2. If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote (5.2, 5.4)
-     */
-    public synchronized CmdRaftVoteResponse handleVoteRequest(CmdRaftVoteRequest request) {
-
-        if (request.term < currentTerm) {
-            return new CmdRaftVoteResponse(currentTerm, false);
-        }
-
-        checkTerm(request.term);
-
-
-        final boolean notVotedYet = votedFor == -1 || votedFor == request.candidateId;
-        final boolean logIsUpToDate = request.lastLogIndex >= commitIndex; // TODO commitIndex or lastApplied?
-        if (notVotedYet && logIsUpToDate) {
-            // vote for candidate
-            votedFor = request.candidateId;
-            return new CmdRaftVoteResponse(currentTerm, true);
-        } else {
-            // reject voting
-            return new CmdRaftVoteResponse(currentTerm, false);
-        }
-
-    }
-
-
-    private void checkTerm(int term) {
-        // All servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (5.1)
-        if (term > currentTerm) {
-            logger.info("Newer term={} received from new leader, switching to FOLLOWER", term);
-            currentTerm = term;
-
-            if (currentState == RaftNodeState.LEADER) {
-                heartbeatLeaderExecutor.shutdown();
-            }
-
-            currentState = RaftNodeState.FOLLOWER;
-        }
-    }
+//    /**
+//     * Receiver implementation:<p>
+//     * 1. Reply false if term < currentTerm (5.1)<p>
+//     * 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm (5.3)<p>
+//     * 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (5.3)<p>
+//     * 4. Append any new entries not already in the log<p>
+//     * 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)<p>
+//     */
+//    public synchronized CmdRaftAppendEntriesResponse appendEntries(CmdRaftAppendEntries cmd) {
+//
+//        // 1. Reply false if term < currentTerm
+//        // If the term in the RPC is smaller than the candidate’s current term, then the candidate rejects the RPC and continues in candidate state.
+//        if (cmd.term < currentTerm) {
+//            logger.debug("term < currentTerm");
+//            return new CmdRaftAppendEntriesResponse(currentTerm, false);
+//        }
+//
+//        // If the leader’s term (included in its RPC) is at least as large as the candidate’s current term, then the candidate
+//        // recognizes the leader as legitimate and returns to follower state. I
+//        checkTerm(cmd.term);
+//
+//        // 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
+//        if (cmd.prevLogIndex >= log.size() || log.get((int) cmd.prevLogIndex).term != cmd.prevLogTerm) {
+//            logger.debug("log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm");
+//            return new CmdRaftAppendEntriesResponse(currentTerm, false);
+//        }
+//
+//        // TODO 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (5.3)
+//
+//        // Append any new entries not already in the log
+//
+//        resetFollowerAppendTimer();
+//
+//        // If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+//        if (cmd.leaderCommit > commitIndex) {
+//            commitIndex = Math.min(cmd.leaderCommit, log.size() - 1);
+//        }
+//
+//        return new CmdRaftAppendEntriesResponse(currentTerm, true);
+//    }
+//
+//    /**
+//     * Receiver implementation:
+//     * 1. Reply false if term < currentTerm (5.1)
+//     * 2. If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote (5.2, 5.4)
+//     */
+//    public synchronized CmdRaftVoteResponse handleVoteRequest(CmdRaftVoteRequest request) {
+//
+//        if (request.term < currentTerm) {
+//            return new CmdRaftVoteResponse(currentTerm, false);
+//        }
+//
+//        checkTerm(request.term);
+//
+//
+//        final boolean notVotedYet = votedFor == -1 || votedFor == request.candidateId;
+//        final boolean logIsUpToDate = request.lastLogIndex >= commitIndex; // TODO commitIndex or lastApplied?
+//        if (notVotedYet && logIsUpToDate) {
+//            // vote for candidate
+//            votedFor = request.candidateId;
+//            return new CmdRaftVoteResponse(currentTerm, true);
+//        } else {
+//            // reject voting
+//            return new CmdRaftVoteResponse(currentTerm, false);
+//        }
+//
+//    }
+//
+//
+//    private void checkTerm(int term) {
+//        // All servers: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (5.1)
+//        if (term > currentTerm) {
+//            logger.info("Newer term={} received from new leader, switching to FOLLOWER", term);
+//            currentTerm = term;
+//
+//            if (currentState == RaftNodeState.LEADER) {
+//                heartbeatLeaderExecutor.shutdown();
+//            }
+//
+//            currentState = RaftNodeState.FOLLOWER;
+//        }
+//    }
 
 
     private void broadcast(RaftMessage message) {
@@ -301,6 +359,8 @@ public class RaftNode<T extends RaftMessage> {
      */
     private synchronized void appendTimeout() {
 
+        // TODO double-check last receiving time (and get rid of timers)
+
         if (currentState == RaftNodeState.LEADER) {
             heartbeatLeaderExecutor.shutdown();
         }
@@ -318,12 +378,6 @@ public class RaftNode<T extends RaftMessage> {
 
         votedFor = currentNodeId;
 
-        final TimerTask task = new TimerTask() {
-            @Override
-            public void run() {
-                electionTimeout();
-            }
-        };
 
         final CmdRaftVoteRequest voteReq = new CmdRaftVoteRequest(
                 currentTerm,
@@ -331,75 +385,63 @@ public class RaftNode<T extends RaftMessage> {
                 lastApplied,
                 429384628); // TODO extract from log!
 
-        try {
+//        try {
 
-            final CompletableFuture<RpcResponse> future0 = rpcService.callRpcSync(voteReq, otherNodes[0]);
-            final CompletableFuture<RpcResponse> future1 = rpcService.callRpcSync(voteReq, otherNodes[1]);
+        final CompletableFuture<RpcResponse> future0 = rpcService.callRpcSync(voteReq, otherNodes[0]);
+        final CompletableFuture<RpcResponse> future1 = rpcService.callRpcSync(voteReq, otherNodes[1]);
 
-            final CompletableFuture<Object> objectCompletableFuture = CompletableFuture.anyOf(future0, future1);
-            final CmdRaftVoteResponse response = (CmdRaftVoteResponse) objectCompletableFuture.get(ELECTION_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        final TimerTask task = new TimerTask() {
+            @Override
+            public void run() {
+                appendTimeout();
+            }
+        };
 
-            /*
-            A candidate wins an election if it receives votes from
-            a majority of the servers in the full cluster for the same
-            term. Each server will vote for at most one candidate in a
-            given term, on a first-come-first-served basis
-            (note: Section 5.4 adds an additional restriction on votes)
-             */
+        electionTimer = new Timer();
+        electionTimer.schedule(task, ELECTION_TIMEOUT_MS);
+    }
 
-            if (response.voteGranted) {
-                logger.info("One vote, becoming a LEADER!");
-                currentState = RaftNodeState.LEADER;
+    private void switchToLeader() {
 
-                heartbeatLeaderExecutor = Executors.newSingleThreadScheduledExecutor();
-                heartbeatLeaderExecutor.scheduleAtFixedRate(
-                        () -> {
-                            logger.info("Sending heartbeats");
-                            final CmdRaftAppendEntries heartBeatReq = new CmdRaftAppendEntries(
-                                    currentTerm,
-                                    currentNodeId,
-                                    lastApplied,
-                                    429384628,
-                                    List.of(),
-                                    commitIndex);
-                            rpcService.callRpcSync(heartBeatReq, otherNodes[0]);
-                            rpcService.callRpcSync(heartBeatReq, otherNodes[1]);
-                        },
-                        0,
-                        HEARTBEAT_LEADER_RATE_MS,
-                        TimeUnit.MILLISECONDS);
+        logger.info("Becoming a LEADER!");
+        currentState = RaftNodeState.LEADER;
+        if (electionTimer != null) {
+            electionTimer.cancel();
+        }
+        if (appendTimer != null) {
+            appendTimer.cancel();
+        }
 
-                // TODO init
-                // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
+        heartbeatLeaderExecutor = Executors.newSingleThreadScheduledExecutor();
+        heartbeatLeaderExecutor.scheduleAtFixedRate(
+                () -> {
+                    logger.info("Sending heartbeats, term={}", currentTerm);
+                    final CmdRaftAppendEntries heartBeatReq = new CmdRaftAppendEntries(
+                            currentTerm,
+                            currentNodeId,
+                            lastApplied,
+                            429384628,
+                            List.of(),
+                            commitIndex);
+                    rpcService.callRpcSync(heartBeatReq, otherNodes[0]);
+                    rpcService.callRpcSync(heartBeatReq, otherNodes[1]);
+                },
+                0,
+                HEARTBEAT_LEADER_RATE_MS,
+                TimeUnit.MILLISECONDS);
+
+        logger.info("Leader initiated");
+
+        // TODO init
+        // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
 //                private final long[] nextIndex = new long[3];
 
-                // for each server, index of the highest log entry known to be replicated on server (initialized to 0, increases monotonically)
+        // for each server, index of the highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 //                private final long[] matchIndex = new long[3];
-
-            } else {
-                logger.info("Vote not granted");
-                // TODO maybe second one granted his vote ?
-            }
-
-        } catch (TimeoutException ex) {
-            logger.warn("Vote timeout");
-        } catch (Exception ex) {
-            logger.warn("Exception while collecting votes", ex);
-        }
-
-        // did not win election
-        if (currentState == RaftNodeState.CANDIDATE) {
-            currentState = RaftNodeState.FOLLOWER;
-            votedFor = -1;
-            resetFollowerAppendTimer();
-        }
-
-//        electionTimer = new Timer();
-//        electionTimer.schedule(task, ELECTION_TIMEOUT_MS);
     }
 
     private synchronized void electionTimeout() {
-        logger.info("election timeout - switching to CANDIDATE");
+        logger.info("election timeout - switching to FOLLOWER");
     }
 
     public enum RaftNodeState {
