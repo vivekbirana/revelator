@@ -1,6 +1,5 @@
 package exchange.core2.revelator.raft;
 
-import org.agrona.PrintBufferUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,7 +18,7 @@ import java.util.function.BiFunction;
 
 public class RpcService implements AutoCloseable {
 
-    private static final Logger logger = LoggerFactory.getLogger(RaftNode.class);
+    private static final Logger logger = LoggerFactory.getLogger(RpcService.class);
 
     private final AtomicLong correlationIdCounter = new AtomicLong(0L);
     private final Map<Long, CompletableFuture<RpcResponse>> futureMap = new ConcurrentHashMap<>();
@@ -92,8 +91,7 @@ public class RpcService implements AutoCloseable {
                 final int messageType = bb.getInt();
                 final long correlationId = bb.getLong();
 
-                logger.debug("RECEIVED from {} mt={}: {}", nodeId, messageType, PrintBufferUtil.hexDump(receivePacket.getData(), 0, receivePacket.getLength()));
-
+//                logger.debug("RECEIVED from {} mt={}: {}", nodeId, messageType, PrintBufferUtil.hexDump(receivePacket.getData(), 0, receivePacket.getLength()));
 
                 if (messageType < 0) {
                     processResponse(receivePacket, bb, nodeId, messageType, correlationId);
@@ -175,12 +173,25 @@ public class RpcService implements AutoCloseable {
     }
 
 
+    public void callRpcAsync(RpcRequest request, int toNodeId) {
+
+        final long correlationId = correlationIdCounter.incrementAndGet();
+        callRpc(request, toNodeId, correlationId);
+    }
+
     public CompletableFuture<RpcResponse> callRpcSync(RpcRequest request, int toNodeId) {
 
         final long correlationId = correlationIdCounter.incrementAndGet();
 
-        CompletableFuture<RpcResponse> future = new CompletableFuture<>();
+        final CompletableFuture<RpcResponse> future = new CompletableFuture<>();
         futureMap.put(correlationId, future);
+
+        callRpc(request, toNodeId, correlationId);
+
+        return future;
+    }
+
+    private void callRpc(RpcRequest request, int toNodeId, long correlationId) {
 
         final byte[] array = new byte[64];
         ByteBuffer bb = ByteBuffer.wrap(array);
@@ -192,8 +203,6 @@ public class RpcService implements AutoCloseable {
         request.serialize(bb);
 
         send(toNodeId, array, bb.position());
-
-        return future;
     }
 
 

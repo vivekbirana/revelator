@@ -4,11 +4,9 @@ package exchange.core2.revelator.raft;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 
@@ -61,10 +59,10 @@ public class RaftNode<T extends RaftMessage> {
 
     private final RpcService rpcService;
 
-    private Timer appendTimer;
-    private Timer electionTimer;
-
-    private ScheduledExecutorService heartbeatLeaderExecutor;
+    // timers
+    private long lastHeartBeatReceivedNs = System.nanoTime();
+    private long lastHeartBeatSentNs = System.nanoTime();
+    private long electionStartedNs = System.nanoTime();
 
     public static void main(String[] args) {
 
@@ -137,9 +135,11 @@ public class RaftNode<T extends RaftMessage> {
                         If the term in the RPC is smaller than the candidate’s current term,
                         then the candidate rejects the RPC and continues in candidate state. */
 
+                        logger.debug("Switch from Candidate to follower");
+
                         switchToFollower();
 
-                        electionTimer.cancel();
+//                        electionTimer.cancel();
 
 
                     } else {
@@ -187,19 +187,77 @@ public class RaftNode<T extends RaftMessage> {
 
         logger.info("Starting node {} as follower...", thisNodeId);
         resetFollowerAppendTimer();
+
+        new Thread(this::workerThread).start();
+
     }
+
+    private void workerThread() {
+
+        try {
+
+            while (true) {
+
+                synchronized (this) {
+
+                    if (currentState == RaftNodeState.FOLLOWER) {
+
+                        if (System.nanoTime() > lastHeartBeatReceivedNs + HEARTBEAT_TIMEOUT_MS * 1_000_000L) {
+                            appendTimeout();
+                        } else {
+
+                        }
+
+                    }
+
+                    if (currentState == RaftNodeState.CANDIDATE) {
+                        final long t = System.nanoTime();
+                        if (t > electionStartedNs + ELECTION_TIMEOUT_MS * 1_000_000L) {
+                            appendTimeout();
+                        }
+                    }
+
+                    if (currentState == RaftNodeState.LEADER) {
+
+                        final long t = System.nanoTime();
+                        if (t > lastHeartBeatSentNs + HEARTBEAT_LEADER_RATE_MS * 1_000_000L) {
+
+                            lastHeartBeatSentNs = t;
+
+                            logger.info("Sending heartbeats to {}, term={}", otherNodes, currentTerm);
+                            final CmdRaftAppendEntries heartBeatReq = new CmdRaftAppendEntries(
+                                    currentTerm,
+                                    currentNodeId,
+                                    lastApplied,
+                                    429384628,
+                                    List.of(),
+                                    commitIndex);
+                            rpcService.callRpcAsync(heartBeatReq, otherNodes[0]);
+                            rpcService.callRpcAsync(heartBeatReq, otherNodes[1]);
+                        }
+                    }
+
+
+                }
+
+                Thread.sleep(10);
+            }
+
+
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+
+    }
+
 
     private void switchToFollower() {
 
-        if (currentState == RaftNodeState.LEADER) {
-            logger.debug("shutdown heartbeats");
-            heartbeatLeaderExecutor.shutdown();
-        }
-
-        if (currentState == RaftNodeState.CANDIDATE && electionTimer != null) {
-            logger.debug("cancelled elevtion timer");
-            electionTimer.cancel();
-        }
+//        if (currentState == RaftNodeState.CANDIDATE && electionTimer != null) {
+//            logger.debug("cancelled elevtion timer");
+//            electionTimer.cancel();
+//        }
 
         if (currentState != RaftNodeState.FOLLOWER) {
             logger.debug("Switching to follower (reset votedFor, start append timer)");
@@ -208,35 +266,6 @@ public class RaftNode<T extends RaftMessage> {
             resetFollowerAppendTimer();
         }
     }
-
-//    public void run(int port) {
-//        try (final DatagramSocket serverSocket = new DatagramSocket(port)) {
-//            final byte[] receiveData = new byte[8];
-//            String sendString = "polo";
-//            final byte[] sendData = sendString.getBytes(StandardCharsets.UTF_8);
-//
-//            logger.info("Listening on udp:{}:{}", InetAddress.getLocalHost().getHostAddress(), port);
-//            final DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
-//
-//            while (true) {
-//                serverSocket.receive(receivePacket);
-//                String sentence = new String(receivePacket.getData(), 0,
-//                        receivePacket.getLength());
-//                logger.debug("RECEIVED: " + sentence);
-//
-//
-//                DatagramPacket sendPacket = new DatagramPacket(
-//                        sendData,
-//                        sendData.length,
-//                        receivePacket.getAddress(),
-//                        receivePacket.getPort());
-//
-//                serverSocket.send(sendPacket);
-//            }
-//        } catch (IOException ex) {
-//            System.out.println(ex);
-//        }
-//    }
 
 
 //    /**
@@ -330,21 +359,8 @@ public class RaftNode<T extends RaftMessage> {
     }
 
     private synchronized void resetFollowerAppendTimer() {
-
-        logger.debug("reset append timer");
-
-        if (appendTimer != null) {
-            appendTimer.cancel();
-        }
-        final TimerTask task = new TimerTask() {
-            @Override
-            public void run() {
-                appendTimeout();
-            }
-        };
-
-        appendTimer = new Timer();
-        appendTimer.schedule(task, HEARTBEAT_TIMEOUT_MS);
+//        logger.debug("reset append timer");
+        lastHeartBeatReceivedNs = System.nanoTime();
     }
 
     /**
@@ -359,11 +375,7 @@ public class RaftNode<T extends RaftMessage> {
      */
     private synchronized void appendTimeout() {
 
-        // TODO double-check last receiving time (and get rid of timers)
-
-        if (currentState == RaftNodeState.LEADER) {
-            heartbeatLeaderExecutor.shutdown();
-        }
+        // TODO double-check last receiving time
 
         currentState = RaftNodeState.CANDIDATE;
 
@@ -385,52 +397,15 @@ public class RaftNode<T extends RaftMessage> {
                 lastApplied,
                 429384628); // TODO extract from log!
 
-//        try {
+        rpcService.callRpcAsync(voteReq, otherNodes[0]);
+        rpcService.callRpcAsync(voteReq, otherNodes[1]);
 
-        final CompletableFuture<RpcResponse> future0 = rpcService.callRpcSync(voteReq, otherNodes[0]);
-        final CompletableFuture<RpcResponse> future1 = rpcService.callRpcSync(voteReq, otherNodes[1]);
-
-        final TimerTask task = new TimerTask() {
-            @Override
-            public void run() {
-                appendTimeout();
-            }
-        };
-
-        electionTimer = new Timer();
-        electionTimer.schedule(task, ELECTION_TIMEOUT_MS);
+        electionStartedNs = System.nanoTime();
     }
 
     private void switchToLeader() {
-
         logger.info("Becoming a LEADER!");
         currentState = RaftNodeState.LEADER;
-        if (electionTimer != null) {
-            electionTimer.cancel();
-        }
-        if (appendTimer != null) {
-            appendTimer.cancel();
-        }
-
-        heartbeatLeaderExecutor = Executors.newSingleThreadScheduledExecutor();
-        heartbeatLeaderExecutor.scheduleAtFixedRate(
-                () -> {
-                    logger.info("Sending heartbeats, term={}", currentTerm);
-                    final CmdRaftAppendEntries heartBeatReq = new CmdRaftAppendEntries(
-                            currentTerm,
-                            currentNodeId,
-                            lastApplied,
-                            429384628,
-                            List.of(),
-                            commitIndex);
-                    rpcService.callRpcSync(heartBeatReq, otherNodes[0]);
-                    rpcService.callRpcSync(heartBeatReq, otherNodes[1]);
-                },
-                0,
-                HEARTBEAT_LEADER_RATE_MS,
-                TimeUnit.MILLISECONDS);
-
-        logger.info("Leader initiated");
 
         // TODO init
         // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
@@ -438,10 +413,6 @@ public class RaftNode<T extends RaftMessage> {
 
         // for each server, index of the highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 //                private final long[] matchIndex = new long[3];
-    }
-
-    private synchronized void electionTimeout() {
-        logger.info("election timeout - switching to FOLLOWER");
     }
 
     public enum RaftNodeState {
