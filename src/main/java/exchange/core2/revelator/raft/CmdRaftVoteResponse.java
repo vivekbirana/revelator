@@ -5,16 +5,7 @@ import java.nio.ByteBuffer;
 /**
  * Invoked by candidates to gather votes (5.2).
  */
-public final class CmdRaftVoteResponse implements RpcResponse {
-
-    public final int term; // currentTerm, for candidate to update itself
-    public final boolean voteGranted; // true means that candidate received vote
-
-    public CmdRaftVoteResponse(int term,
-                               boolean voteGranted) {
-        this.term = term;
-        this.voteGranted = voteGranted;
-    }
+public record CmdRaftVoteResponse(int term, boolean voteGranted) implements RpcResponse {
 
     @Override
     public int getMessageType() {

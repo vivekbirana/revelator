@@ -1,5 +1,6 @@
 package exchange.core2.revelator.raft;
 
+import org.agrona.PrintBufferUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,8 +14,6 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.BiConsumer;
-import java.util.function.BiFunction;
 
 public class RpcService implements AutoCloseable {
 
@@ -25,14 +24,12 @@ public class RpcService implements AutoCloseable {
     private final Map<Integer, RemoteUdpSocket> socketMap;
     private final int serverPort;
     private final int serverNodeId;
-    private final BiFunction<Integer, RpcRequest, RpcResponse> handler;
-    private final BiConsumer<Integer, RpcResponse> handlerResponses;
+    private final RpcHandler handler;
 
     private volatile boolean active = true;
 
     public RpcService(Map<Integer, String> remoteNodes,
-                      BiFunction<Integer, RpcRequest, RpcResponse> handler,
-                      BiConsumer<Integer, RpcResponse> handlerResponses,
+                      RpcHandler handler,
                       int serverNodeId) {
 
         final Map<Integer, RemoteUdpSocket> socketMap = new HashMap<>();
@@ -57,7 +54,6 @@ public class RpcService implements AutoCloseable {
 
         this.socketMap = socketMap;
         this.handler = handler;
-        this.handlerResponses = handlerResponses;
         this.serverPort = socketMap.get(serverNodeId).port;
         this.serverNodeId = serverNodeId;
 
@@ -81,23 +77,37 @@ public class RpcService implements AutoCloseable {
 
             while (active) {
 
-                serverSocket.receive(receivePacket);
-                // String sentence = new String(receivePacket.getData(), 0, receivePacket.getLength());
+                try {
+                    serverSocket.receive(receivePacket);
 
+                    final ByteBuffer bb = ByteBuffer.wrap(receivePacket.getData(), 0, receivePacket.getLength());
 
-                final ByteBuffer bb = ByteBuffer.wrap(receivePacket.getData(), 0, receivePacket.getLength());
-
-                final int nodeId = bb.getInt();
-                final int messageType = bb.getInt();
-                final long correlationId = bb.getLong();
+                    final int nodeId = bb.getInt();
+                    final int messageType = bb.getInt();
+                    final long correlationId = bb.getLong();
 
 //                logger.debug("RECEIVED from {} mt={}: {}", nodeId, messageType, PrintBufferUtil.hexDump(receivePacket.getData(), 0, receivePacket.getLength()));
 
-                if (messageType < 0) {
-                    processResponse(receivePacket, bb, nodeId, messageType, correlationId);
+                    final RpcMessage msg = createByType(messageType, bb);
 
-                } else {
-                    processRequest(receivePacket, bb, nodeId, messageType, correlationId);
+                    if (messageType < 0) {
+                        final CompletableFuture<RpcResponse> future = futureMap.remove(correlationId);
+                        if (future != null) {
+                            future.complete((RpcResponse) msg);
+                        } else {
+                            handler.handleResponse(nodeId, (RpcResponse) msg);
+                        }
+
+                    } else {
+                        final RpcResponse response = handler.handleRequest(nodeId, (RpcRequest) msg);
+                        if (response != null) {
+                            sendResponse(nodeId, correlationId, response);
+                        }
+                    }
+
+                } catch (Exception ex) {
+                    String message = PrintBufferUtil.hexDump(receivePacket.getData(), 0, receivePacket.getLength());
+                    logger.error("Failed to process message from {}: {}", receivePacket.getAddress().getHostAddress(), message, ex);
                 }
             }
 
@@ -110,54 +120,16 @@ public class RpcService implements AutoCloseable {
 
     }
 
-    private void processRequest(DatagramPacket receivePacket, ByteBuffer bb, int nodeId, int messageType, long correlationId) {
-
-        if (messageType == RpcRequest.REQUEST_APPEND_ENTRIES) {
-
-            final CmdRaftAppendEntries request = CmdRaftAppendEntries.create(bb);
-            final RpcResponse response = handler.apply(nodeId, request);
-            if (response != null) {
-                sendResponse(nodeId, correlationId, response);
-            }
-
-        } else if (messageType == RpcRequest.REQUEST_VOTE) {
-
-            final CmdRaftVoteRequest request = CmdRaftVoteRequest.create(bb);
-            final RpcResponse response = handler.apply(nodeId, request);
-            if (response != null) {
-                sendResponse(nodeId, correlationId, response);
-            }
-
-        } else {
-            logger.warn("Unsupported response type={} from {} correlationId={}",
-                    messageType, receivePacket.getAddress().getHostAddress(), correlationId);
-        }
-    }
-
-    private void processResponse(DatagramPacket receivePacket, ByteBuffer bb, int nodeId, int messageType, long correlationId) {
-
-        final CompletableFuture<RpcResponse> future = futureMap.remove(correlationId);
-
-        if (messageType == RpcResponse.RESPONSE_APPEND_ENTRIES) {
-
-            final CmdRaftAppendEntriesResponse r = CmdRaftAppendEntriesResponse.create(bb);
-            if (future != null) {
-                future.complete(r);
-            }
-            handlerResponses.accept(nodeId, r);
-
-        } else if (messageType == RpcResponse.RESPONSE_VOTE) {
-
-            final CmdRaftVoteResponse r = CmdRaftVoteResponse.create(bb);
-            if (future != null) {
-                future.complete(r);
-            }
-            handlerResponses.accept(nodeId, r);
-
-        } else {
-            logger.warn("Unsupported response type={} from {} correlationId={}",
-                    messageType, receivePacket.getAddress().getHostAddress(), correlationId);
-        }
+    static RpcMessage createByType(int messageType, ByteBuffer buffer) {
+        return switch (messageType) {
+            case RpcMessage.REQUEST_APPEND_ENTRIES -> CmdRaftAppendEntries.create(buffer);
+            case RpcMessage.RESPONSE_APPEND_ENTRIES -> CmdRaftAppendEntriesResponse.create(buffer);
+            case RpcMessage.REQUEST_VOTE -> CmdRaftVoteRequest.create(buffer);
+            case RpcMessage.RESPONSE_VOTE -> CmdRaftVoteResponse.create(buffer);
+            case RpcMessage.REQUEST_CUSTOM -> CustomCommandRequest.create(buffer);
+            case RpcMessage.RESPONSE_CUSTOM -> CustomCommandResponse.create(buffer);
+            default -> throw new IllegalArgumentException("Unknown messageType: " + messageType);
+        };
     }
 
     private void sendResponse(int callerNodeId, long correlationId, RpcResponse response) {

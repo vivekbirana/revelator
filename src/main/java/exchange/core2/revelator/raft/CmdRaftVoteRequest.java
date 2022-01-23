@@ -5,24 +5,7 @@ import java.nio.ByteBuffer;
 /**
  * Invoked by leader to replicate log entries (5.3); also used as heartbeat (5.2).
  */
-public final class CmdRaftVoteRequest implements RpcRequest {
-
-    public final int term; // candidate's term
-    public final int candidateId; // candidate requesting vote
-
-    public final long lastLogIndex; // index of candidate’s last log entry (5.4)
-    public final int lastLogTerm; // term of candidate’s last log entry (5.4)
-
-    public CmdRaftVoteRequest(int term,
-                              int candidateId,
-                              long lastLogIndex,
-                              int lastLogTerm) {
-
-        this.term = term;
-        this.candidateId = candidateId;
-        this.lastLogIndex = lastLogIndex;
-        this.lastLogTerm = lastLogTerm;
-    }
+public record CmdRaftVoteRequest(int term, int candidateId, long lastLogIndex, int lastLogTerm) implements RpcRequest {
 
     @Override
     public int getMessageType() {
