@@ -2,6 +2,7 @@ package exchange.core2.revelator.raft;
 
 import java.nio.ByteBuffer;
 
+// TODO support batching
 public record CustomCommandRequest(long data) implements RpcRequest {
 
     @Override

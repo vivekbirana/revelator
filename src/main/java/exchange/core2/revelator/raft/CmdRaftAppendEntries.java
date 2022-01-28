@@ -1,6 +1,7 @@
 package exchange.core2.revelator.raft;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -10,7 +11,7 @@ public record CmdRaftAppendEntries(int term,
                                    int leaderId,
                                    long prevLogIndex,
                                    int prevLogTerm,
-                                   List<RaftMessage> entries,
+                                   List<RaftLogEntry> entries,
                                    long leaderCommit) implements RpcRequest {
 
     @Override
@@ -24,7 +25,8 @@ public record CmdRaftAppendEntries(int term,
         buffer.putInt(leaderId);
         buffer.putLong(prevLogIndex);
         buffer.putInt(prevLogTerm);
-//        buffer.put
+        buffer.putInt(entries.size());
+        entries.forEach(entry -> entry.serialize(buffer));
         buffer.putLong(leaderCommit);
     }
 
@@ -34,10 +36,16 @@ public record CmdRaftAppendEntries(int term,
         final int leaderId = buffer.getInt();
         final long prevLogIndex = buffer.getLong();
         final int prevLogTerm = buffer.getInt();
-        // todo entries
+        final int numEntries = buffer.getInt();
+
+        final List<RaftLogEntry> entries = new ArrayList<>(numEntries);
+        for (int i = 0; i < numEntries; i++) {
+            entries.add(RaftLogEntry.create(buffer));
+        }
+
         final long leaderCommit = buffer.getLong();
 
-        return new CmdRaftAppendEntries(term, leaderId, prevLogIndex, prevLogTerm, List.of(), leaderCommit);
+        return new CmdRaftAppendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
     }
 
     @Override
