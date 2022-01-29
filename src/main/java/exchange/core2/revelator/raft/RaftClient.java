@@ -5,7 +5,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.net.*;
+import java.util.Map;
+import java.util.Random;
 
 public class RaftClient {
 
@@ -15,35 +16,34 @@ public class RaftClient {
     public static void main(String[] args) throws IOException, InterruptedException {
         final RaftClient raftClient = new RaftClient();
 
+        Random random = new Random(1L);
         while (true) {
-            raftClient.sendEcho("TEST123");
-            Thread.sleep(1000);
+            raftClient.sendEcho(random.nextLong());
+            Thread.sleep(2000);
         }
     }
 
-    private DatagramSocket socket;
-    private InetAddress address;
+    private RpcClient rpcClient;
 
-    private byte[] buf;
+    public RaftClient() {
 
-    public RaftClient() throws SocketException, UnknownHostException {
-        socket = new DatagramSocket();
-        address = InetAddress.getByName("localhost");
+        // localhost:3778, localhost:3779, localhost:3780
+        final Map<Integer, String> remoteNodes = Map.of(
+                0, "localhost:3778",
+                1, "localhost:3779",
+                2, "localhost:3780");
+
+        this.rpcClient = new RpcClient(remoteNodes);
     }
 
-    public String sendEcho(String msg) throws IOException {
-        buf = msg.getBytes();
-        DatagramPacket packet = new DatagramPacket(buf, buf.length, address, 3778);
-        log.debug(">> {}", msg);
-        socket.send(packet);
-        packet = new DatagramPacket(buf, buf.length);
-        socket.receive(packet);
-        String received = new String(packet.getData(), 0, packet.getLength());
-        log.debug("<< {}", received);
-        return received;
+    public void sendEcho(long data) {
+        try {
+            log.info("send >>> data={}", data);
+            final int hash = rpcClient.callRpcSync(data, 500);
+            log.info("recv <<< hash={}", hash);
+        } catch (Exception ex) {
+            log.warn("Exception: ", ex);
+        }
     }
 
-    public void close() {
-        socket.close();
-    }
 }

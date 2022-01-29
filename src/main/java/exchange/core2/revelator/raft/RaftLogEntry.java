@@ -23,6 +23,14 @@ public class RaftLogEntry {
         buffer.putLong(cmd);
     }
 
+    @Override
+    public String toString() {
+        return "RLE{" +
+                "t" + term +
+                " cmd=" + cmd +
+                '}';
+    }
+
     public static RaftLogEntry create(ByteBuffer buffer) {
         final int term = buffer.getInt();
         final long cmd = buffer.getLong();

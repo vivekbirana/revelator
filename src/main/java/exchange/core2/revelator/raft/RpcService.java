@@ -7,7 +7,6 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.net.*;
 import java.nio.ByteBuffer;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,7 +18,7 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
 
     private final AtomicLong correlationIdCounter = new AtomicLong(1L);
     private final Map<Long, CompletableFuture<RpcResponse>> futureMap = new ConcurrentHashMap<>();
-    private final Map<Integer, RemoteUdpSocket> socketMap;
+    private final Map<Integer, RaftUtils.RemoteUdpSocket> socketMap;
     private final int serverPort;
     private final int serverNodeId;
     private final RpcHandler handler;
@@ -33,27 +32,7 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
                       RpcHandler handler,
                       int serverNodeId) {
 
-        final Map<Integer, RemoteUdpSocket> socketMap = new HashMap<>();
-        remoteNodes.forEach((id, address) -> {
-
-            try {
-                final String[] split = address.split(":");
-
-                final DatagramSocket socket = new DatagramSocket();
-                final InetAddress host = InetAddress.getByName(split[0]);
-                final int port = Integer.parseInt(split[1]);
-
-                RemoteUdpSocket remoteUdpSocket = new RemoteUdpSocket(socket, host, port);
-
-                socketMap.put(id, remoteUdpSocket);
-
-            } catch (Exception ex) {
-                throw new RuntimeException(ex);
-            }
-        });
-
-
-        this.socketMap = socketMap;
+        this.socketMap = RaftUtils.createHostMap(remoteNodes);;
         this.handler = handler;
         this.serverPort = socketMap.get(serverNodeId).port;
         this.serverNodeId = serverNodeId;
@@ -96,9 +75,9 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
                 final int messageType = bb.getInt();
                 final long correlationId = bb.getLong();
 
-//                logger.debug("RECEIVED from {} mt={}: {}", nodeId, messageType, PrintBufferUtil.hexDump(receivePacket.getData(), 0, receivePacket.getLength()));
+                logger.debug("RECEIVED from {} mt={}: {}", nodeId, messageType, PrintBufferUtil.hexDump(receivePacket.getData(), 0, receivePacket.getLength()));
 
-                final RpcMessage msg = createByType(messageType, bb);
+                final RpcMessage msg = RaftUtils.createMessageByType(messageType, bb);
                 // TODO use msgFactory
 
                 if (messageType < 0) {
@@ -116,6 +95,7 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
                 } else {
 
                     if (msg instanceof CustomCommandRequest) {
+                        // request from client
 
                         final InetAddress address = receivePacket.getAddress();
                         final int port = receivePacket.getPort();
@@ -147,17 +127,7 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
         serverSocket.close();
     }
 
-    static RpcMessage createByType(int messageType, ByteBuffer buffer) {
-        return switch (messageType) {
-            case RpcMessage.REQUEST_APPEND_ENTRIES -> CmdRaftAppendEntries.create(buffer);
-            case RpcMessage.RESPONSE_APPEND_ENTRIES -> CmdRaftAppendEntriesResponse.create(buffer);
-            case RpcMessage.REQUEST_VOTE -> CmdRaftVoteRequest.create(buffer);
-            case RpcMessage.RESPONSE_VOTE -> CmdRaftVoteResponse.create(buffer);
-            case RpcMessage.REQUEST_CUSTOM -> CustomCommandRequest.create(buffer);
-            case RpcMessage.RESPONSE_CUSTOM -> CustomCommandResponse.create(buffer);
-            default -> throw new IllegalArgumentException("Unknown messageType: " + messageType);
-        };
-    }
+
 
     private void sendResponse(int callerNodeId, long correlationId, RpcResponse response) {
         final byte[] array = new byte[64];
@@ -193,7 +163,7 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
 
     private void callRpc(RpcRequest request, int toNodeId, long correlationId) {
 
-        final byte[] array = new byte[64];
+        final byte[] array = new byte[256];
         ByteBuffer bb = ByteBuffer.wrap(array);
 
         bb.putInt(serverNodeId);
@@ -208,11 +178,11 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
 
     private void send(int nodeId, byte[] data, int length) {
 
-        final RemoteUdpSocket remoteUdpSocket = socketMap.get(nodeId);
+        final RaftUtils.RemoteUdpSocket remoteUdpSocket = socketMap.get(nodeId);
         final DatagramPacket packet = new DatagramPacket(data, length, remoteUdpSocket.address, remoteUdpSocket.port);
 
         try {
-            remoteUdpSocket.socket.send(packet);
+            serverSocket.send(packet);
         } catch (IOException ex) {
             throw new RuntimeException(ex);
         }
@@ -221,7 +191,7 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
     public void respondToClient(InetAddress address, int port, long correlationId, RpcResponse response) {
 
         final byte[] array = new byte[64];
-        ByteBuffer bb = ByteBuffer.wrap(array);
+        final ByteBuffer bb = ByteBuffer.wrap(array);
 
         // put only correlationId into the header
         bb.putLong(correlationId);
@@ -248,20 +218,6 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
     public void close() throws Exception {
 
         active = false;
-    }
-
-
-    public static final class RemoteUdpSocket {
-
-        private final DatagramSocket socket; // TODO remove
-        private final InetAddress address;
-        private final int port;
-
-        public RemoteUdpSocket(DatagramSocket socket, InetAddress address, int port) {
-            this.socket = socket;
-            this.address = address;
-            this.port = port;
-        }
     }
 
 

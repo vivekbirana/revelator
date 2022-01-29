@@ -18,7 +18,7 @@ public class RaftNode {
     public static final int HEARTBEAT_LEADER_RATE_MS = 1000;
     public static final int ELECTION_TIMEOUT_MIN_MS = 2500;
     public static final int ELECTION_TIMEOUT_MAX_MS = 2800;
-    public static final int APPEND_REPLY_TIMEOUT_MAX_MS = 20;
+    public static final int APPEND_REPLY_TIMEOUT_MAX_MS = 1000;
 
 
     /* **** Persistent state on all servers: (Updated on stable storage before responding to RPCs) */
@@ -179,12 +179,12 @@ public class RaftNode {
                             return new CmdRaftAppendEntriesResponse(currentTerm, true);
                         }
 
-                        log.debug("Adding new records into the log");
+                        log.debug("Adding new records into the log...");
 
                         // 2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm
                         final long prevLogIndex = cmd.prevLogIndex();
-                        if (prevLogIndex >= logRepository.getLastLogIndex()) {
-                            log.warn("Reject - log doesn’t contain an entry at prevLogIndex={}", logRepository.getLastLogIndex());
+                        if (prevLogIndex > 0 && prevLogIndex != logRepository.getLastLogIndex()) {
+                            log.warn("Reject - log doesn’t contain an entry at prevLogIndex={} (last is {}))", prevLogIndex, logRepository.getLastLogIndex());
                             return new CmdRaftAppendEntriesResponse(currentTerm, false);
                         }
 
@@ -199,13 +199,18 @@ public class RaftNode {
                         // 4. Append any new entries not already in the log
                         logRepository.appendOrOverride(cmd.entries(), prevLogIndex);
 
+                        log.debug("Added to log repository: {}", cmd.entries());
+
                         // 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
                         if (cmd.leaderCommit() > commitIndex) {
                             commitIndex = Math.min(cmd.leaderCommit(), logRepository.getLastLogIndex());
                             log.debug("set commitIndex to {}", commitIndex);
                         }
 
+                        // todo can do in different thread
                         applyPendingEntriesToStateMachine();
+
+                        return new CmdRaftAppendEntriesResponse(currentTerm, true);
                     }
                 }
 
@@ -230,29 +235,49 @@ public class RaftNode {
                     }
                 } else if (resp instanceof final CmdRaftAppendEntriesResponse appendResponse) {
                     synchronized (this) {
-                        if (appendResponse.success() && correlationId == correlationIds[fromNodeId]) {
+                        if (correlationId == correlationIds[fromNodeId]) {
+
 
                             timeSent[fromNodeId] = 0L;
-                            matchIndex[fromNodeId] = sentUpTo[fromNodeId];
-                            nextIndex[fromNodeId] = sentUpTo[fromNodeId] + 1;
 
-                            // If there exists an N such that
-                            // N > commitIndex, a majority of matchIndex[i] >= N, and log[N].term == currentTerm:
-                            // set commitIndex = N (5.3, 5.4).
+                            if (appendResponse.success()) {
 
+                                log.debug("current sentUpTo[{}]={}", fromNodeId, sentUpTo[fromNodeId]);
 
-                            if (matchIndex[fromNodeId] > commitIndex) {
-                                final long newCommitIndex = Math.max(
-                                        Math.max(commitIndex, matchIndex[fromNodeId]),
-                                        logRepository.lastEntryInTerm(commitIndex, matchIndex[fromNodeId], currentTerm));
+                                matchIndex[fromNodeId] = sentUpTo[fromNodeId];
+                                nextIndex[fromNodeId] = sentUpTo[fromNodeId] + 1;
 
-                                if (commitIndex != newCommitIndex) {
-                                    log.debug("updated commitIndex: {}->{}", commitIndex, newCommitIndex);
+                                // If there exists an N such that
+                                // N > commitIndex, a majority of matchIndex[i] >= N, and log[N].term == currentTerm:
+                                // set commitIndex = N (5.3, 5.4).
+
+                                if (matchIndex[fromNodeId] > commitIndex) {
+                                    log.debug("lastEntryInTerm({}, {}, {});", commitIndex, matchIndex[fromNodeId], currentTerm);
+                                    final long lastEntryInTerm = logRepository.lastEntryInTerm(commitIndex, matchIndex[fromNodeId], currentTerm);
+
+                                    final long newCommitIndex = Math.max(
+                                            Math.max(commitIndex, matchIndex[fromNodeId]),
+                                            lastEntryInTerm);
+
+                                    if (commitIndex != newCommitIndex) {
+                                        log.debug("updated commitIndex: {}->{}", commitIndex, newCommitIndex);
+                                    }
+
+                                    commitIndex = newCommitIndex;
+
+                                    // TODO another thread
+                                    applyPendingEntriesToStateMachine();
                                 }
-                                commitIndex = newCommitIndex;
+
+                            } else {
+                                if (nextIndex[fromNodeId] > 1) {
+                                    log.debug("decrementing nextIndex[{}] to {}", fromNodeId, nextIndex[fromNodeId] - 1);
+                                    nextIndex[fromNodeId]--;
+                                } else {
+                                    log.warn("Can not decrement nextIndex[{}]", fromNodeId);
+                                }
                             }
                         }
-
                     }
                 }
 
@@ -282,6 +307,7 @@ public class RaftNode {
                         clientResponsesMap.put(index, new ClientAddress(address, port, correlationId));
 
                     } else {
+                        log.debug("Redirecting client to leader nodeId={}", votedFor);
                         // inform client about different leader
                         return new CustomCommandResponse(0, votedFor, false);
                     }
@@ -337,7 +363,7 @@ public class RaftNode {
                         // If successful: update nextIndex and matchIndex for follower (5.3)
                         // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (5.3)
 
-                        final int prevLogTerm = logRepository.getLastLogTerm();
+
                         final long prevLogIndex = logRepository.getLastLogIndex();
 
                         Arrays.stream(otherNodes).forEach(targetNodeId -> {
@@ -358,23 +384,28 @@ public class RaftNode {
                             if (canRetry || timeToSendHeartbeat) {
 
                                 final List<RaftLogEntry> newEntries = logRepository.getEntriesStartingFrom(nextIndexForNode);
+                                final int prevLogTerm = logRepository.getEntryOpt(nextIndexForNode - 1).map(e -> e.term).orElse(0);
+
+                                log.debug("node {} : nextIndexForNode={} newEntries={} prevLogTerm={}", targetNodeId, nextIndexForNode, newEntries, prevLogTerm);
+
 
                                 final CmdRaftAppendEntries appendRequest = new CmdRaftAppendEntries(
                                         currentTerm,
                                         currentNodeId,
-                                        prevLogIndex,
+                                        nextIndexForNode - 1,
                                         prevLogTerm,
                                         newEntries,
                                         commitIndex);
 
-                                log.info("Sending {} entries to {}, term={}", newEntries.size(), otherNodes, currentTerm);
-
                                 final long corrId = rpcService.callRpcAsync(appendRequest, targetNodeId);
+                                log.info("Sent {} entries to {}: {} corrId={}", newEntries.size(), targetNodeId, appendRequest, corrId);
 
                                 if (!newEntries.isEmpty()) {
                                     correlationIds[targetNodeId] = corrId;
                                     timeSent[targetNodeId] = System.nanoTime();
-                                    sentUpTo[targetNodeId] = nextIndexForNode + newEntries.size();
+                                    sentUpTo[targetNodeId] = nextIndexForNode - 1 + newEntries.size();
+                                    log.debug("correlationIds[{}]={}", targetNodeId, corrId);
+                                    log.debug("set sentUpTo[{}]={}", targetNodeId, sentUpTo[targetNodeId]);
                                 }
 
                                 lastHeartBeatSentNs[targetNodeId] = System.nanoTime();
@@ -478,12 +509,14 @@ public class RaftNode {
         while (lastApplied < commitIndex) {
             lastApplied++;
             final RaftLogEntry raftLogEntry = logRepository.getEntry(lastApplied);
+            log.debug("Applying to RSM: {}", raftLogEntry);
             final int result = rsm.apply(raftLogEntry.cmd);
 
             if (currentState == RaftNodeState.LEADER) {
 
                 // respond to client that batch has applied
                 final ClientAddress c = clientResponsesMap.get(lastApplied);
+                log.debug("Replying to client lastApplied={} c={}", lastApplied, c);
                 rpcService.respondToClient(
                         c.address,
                         c.port,

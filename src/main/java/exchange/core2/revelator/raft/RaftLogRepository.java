@@ -19,14 +19,20 @@ public class RaftLogRepository {
     }
 
     public Optional<RaftLogEntry> getEntryOpt(long index) {
-        return Optional.ofNullable(logEntries.get((int) index - 1));
+        if (index < 1 || index > logEntries.size()) {
+            return Optional.empty();
+        }
+
+        return Optional.of(logEntries.get((int) index - 1));
     }
 
     public long lastEntryInTerm(long indexAfter, long indexBeforeIncl, int term) {
 
         int idx = (int) indexAfter;
+
         for (int i = (int) indexAfter + 1; i <= indexBeforeIncl; i++) {
-            if (logEntries.get(idx - 1).term == term) {
+            log.debug("i={}", i);
+            if (logEntries.get(i - 1).term == term) {
                 idx = i;
             }
         }
@@ -67,11 +73,18 @@ public class RaftLogRepository {
 
     public void appendOrOverride(final List<RaftLogEntry> newEntries, long prevLogIndex) {
 
+        log.debug("appendOrOverride(newEntries={} , prevLogIndex={}", newEntries, prevLogIndex);
+
         for (int i = 0; i < newEntries.size(); i++) {
             final RaftLogEntry newEntry = newEntries.get(i);
+
             if ((prevLogIndex + i) < logEntries.size()) {
+
+
                 final int pos = (int) prevLogIndex + i;
                 final int existingTerm = logEntries.get(pos).term;
+
+                log.debug("Validating older record with index={}: existingTerm={} newEntry.term={}", pos + 1, existingTerm, newEntry.term);
 
                 // 3. If an existing entry conflicts with a new one (same index but different terms),
                 // delete the existing entry and all that follow it
@@ -84,6 +97,7 @@ public class RaftLogRepository {
                     }
                 }
             } else {
+                log.debug("appendOrOverride - added {}", newEntry);
                 logEntries.add(newEntry); // TODO inefficient, because normally records are simply appended as batch
             }
         }
@@ -95,6 +109,8 @@ public class RaftLogRepository {
             return List.of();
         }
 
-        return logEntries.subList((int) nextIndex - 1, logEntries.size());
+        log.debug("getEntriesStartingFrom({}): logEntries: {}", nextIndex, logEntries);
+
+        return new ArrayList<>(logEntries.subList((int) nextIndex - 1, logEntries.size()));
     }
 }
