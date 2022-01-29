@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 public class RaftLogRepository {
 
@@ -16,6 +17,22 @@ public class RaftLogRepository {
     public RaftLogEntry getEntry(long index) {
         return logEntries.get((int) index - 1);
     }
+
+    public Optional<RaftLogEntry> getEntryOpt(long index) {
+        return Optional.ofNullable(logEntries.get((int) index - 1));
+    }
+
+    public long lastEntryInTerm(long indexAfter, long indexBeforeIncl, int term) {
+
+        int idx = (int) indexAfter;
+        for (int i = (int) indexAfter + 1; i <= indexBeforeIncl; i++) {
+            if (logEntries.get(idx - 1).term == term) {
+                idx = i;
+            }
+        }
+        return idx;
+    }
+
 
     public long getLastLogIndex() {
         return logEntries.size(); // 0 = no records
@@ -78,6 +95,6 @@ public class RaftLogRepository {
             return List.of();
         }
 
-       return logEntries.subList((int) nextIndex - 1, logEntries.size());
+        return logEntries.subList((int) nextIndex - 1, logEntries.size());
     }
 }
