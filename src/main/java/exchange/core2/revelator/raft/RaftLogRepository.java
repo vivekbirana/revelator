@@ -1,5 +1,7 @@
 package exchange.core2.revelator.raft;
 
+import exchange.core2.revelator.raft.messages.RaftLogEntry;
+import exchange.core2.revelator.raft.messages.RsmRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,7 +34,7 @@ public class RaftLogRepository<T extends RsmRequest> {
 
         for (int i = (int) indexAfter + 1; i <= indexBeforeIncl; i++) {
             log.debug("i={}", i);
-            if (logEntries.get(i - 1).term == term) {
+            if (logEntries.get(i - 1).term() == term) {
                 idx = i;
             }
         }
@@ -48,7 +50,7 @@ public class RaftLogRepository<T extends RsmRequest> {
         if (logEntries.isEmpty()) {
             return 0; // return term 0 by default
         } else {
-            return logEntries.get(logEntries.size() - 1).term;
+            return logEntries.get(logEntries.size() - 1).term();
         }
     }
 
@@ -82,15 +84,15 @@ public class RaftLogRepository<T extends RsmRequest> {
 
 
                 final int pos = (int) prevLogIndex + i;
-                final int existingTerm = logEntries.get(pos).term;
+                final int existingTerm = logEntries.get(pos).term();
 
-                log.debug("Validating older record with index={}: existingTerm={} newEntry.term={}", pos + 1, existingTerm, newEntry.term);
+                log.debug("Validating older record with index={}: existingTerm={} newEntry.term={}", pos + 1, existingTerm, newEntry.term());
 
                 // 3. If an existing entry conflicts with a new one (same index but different terms),
                 // delete the existing entry and all that follow it
 
-                if (newEntry.term != existingTerm) {
-                    log.debug("Remove all records after index={}, because term is different: {} (old={})", pos + 1, newEntry.term, existingTerm);
+                if (newEntry.term() != existingTerm) {
+                    log.debug("Remove all records after index={}, because term is different: {} (old={})", pos + 1, newEntry.term(), existingTerm);
                     int lastIdxToRemove = logEntries.size();
                     if (lastIdxToRemove > pos + 1) {
                         logEntries.subList(pos + 1, lastIdxToRemove).clear();

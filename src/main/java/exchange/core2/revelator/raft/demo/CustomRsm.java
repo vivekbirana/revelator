@@ -1,12 +1,14 @@
-package exchange.core2.revelator.raft;
+package exchange.core2.revelator.raft.demo;
 
+import exchange.core2.revelator.raft.ReplicatedStateMachine;
+import exchange.core2.revelator.raft.RsmMessageFactory;
 import org.agrona.collections.Hashing;
 
 import java.nio.ByteBuffer;
 
 public class CustomRsm implements
         ReplicatedStateMachine<CustomRsmCommand, CustomRsmResponse>,
-        SerializableMessageFactory<CustomRsmCommand, CustomRsmResponse> {
+        RsmMessageFactory<CustomRsmCommand, CustomRsmResponse> {
 
     public static final CustomRsmResponse EMPTY_RSM_RESPONSE = new CustomRsmResponse(0);
 
@@ -15,7 +17,7 @@ public class CustomRsm implements
 
     @Override
     public CustomRsmResponse applyCommand(CustomRsmCommand cmd) {
-        hash = Hashing.hash(hash ^ Hashing.hash(cmd.data));
+        hash = Hashing.hash(hash ^ Hashing.hash(cmd.data()));
         return new CustomRsmResponse(hash);
     }
 

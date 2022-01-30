@@ -1,6 +1,7 @@
-package exchange.core2.revelator.raft;
+package exchange.core2.revelator.raft.demo;
 
 
+import exchange.core2.revelator.raft.RpcClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,7 +41,7 @@ public class RaftClient {
         try {
             log.info("send >>> data={}", data);
             final CustomRsmResponse res = rpcClient.callRpcSync(new CustomRsmCommand(data), 500);
-            log.info("recv <<< hash={}", res.hash);
+            log.info("recv <<< hash={}", res.hash());
         } catch (Exception ex) {
             log.warn("Exception: ", ex);
         }

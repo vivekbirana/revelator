@@ -1,4 +1,6 @@
-package exchange.core2.revelator.raft;
+package exchange.core2.revelator.raft.messages;
+
+import exchange.core2.revelator.raft.RsmMessageFactory;
 
 import java.nio.ByteBuffer;
 
@@ -16,7 +18,7 @@ public record CustomCommandRequest<T extends RsmRequest>(T rsmRequest) implement
         rsmRequest.serialize(buffer);
     }
 
-    public static <T extends RsmRequest> CustomCommandRequest<T> create(ByteBuffer buffer, SerializableMessageFactory<T, ?> factory) {
+    public static <T extends RsmRequest> CustomCommandRequest<T> create(ByteBuffer buffer, RsmMessageFactory<T, ?> factory) {
 
         return new CustomCommandRequest<>(factory.createRequest(buffer));
     }

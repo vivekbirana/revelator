@@ -1,5 +1,6 @@
 package exchange.core2.revelator.raft;
 
+import exchange.core2.revelator.raft.messages.*;
 import org.agrona.PrintBufferUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,7 +23,7 @@ public class RpcService<T extends RsmRequest, S extends RsmResponse> implements 
     private final int serverPort;
     private final int serverNodeId;
     private final RpcHandler<T, S> handler;
-    private final SerializableMessageFactory<T, S> msgFactory;
+    private final RsmMessageFactory<T, S> msgFactory;
 
     private final DatagramSocket serverSocket;
 
@@ -30,7 +31,7 @@ public class RpcService<T extends RsmRequest, S extends RsmResponse> implements 
 
     public RpcService(Map<Integer, String> remoteNodes,
                       RpcHandler<T, S> handler,
-                      SerializableMessageFactory<T, S> msgFactory,
+                      RsmMessageFactory<T, S> msgFactory,
                       int serverNodeId) {
 
         this.socketMap = RaftUtils.createHostMap(remoteNodes);

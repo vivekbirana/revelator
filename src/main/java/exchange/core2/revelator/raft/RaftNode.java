@@ -1,6 +1,7 @@
 package exchange.core2.revelator.raft;
 
 
+import exchange.core2.revelator.raft.messages.*;
 import org.eclipse.collections.impl.map.mutable.primitive.LongObjectHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -82,18 +83,9 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
     private long electionEndNs = System.nanoTime();
 
 
-    public static void main(String[] args) {
-
-        final int thisNodeId = Integer.parseInt(args[0]);
-
-        final CustomRsm customRsm = new CustomRsm();
-
-        new RaftNode<>(thisNodeId, customRsm, customRsm);
-    }
-
     public RaftNode(int thisNodeId,
                     ReplicatedStateMachine<T, S> rsm,
-                    SerializableMessageFactory<T, S> msgFactory) {
+                    RsmMessageFactory<T, S> msgFactory) {
 
         // localhost:3778, localhost:3779, localhost:3780
         final Map<Integer, String> remoteNodes = Map.of(
@@ -385,7 +377,7 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
                             if (canRetry || timeToSendHeartbeat) {
 
                                 final List<RaftLogEntry<T>> newEntries = logRepository.getEntriesStartingFrom(nextIndexForNode);
-                                final int prevLogTerm = logRepository.getEntryOpt(nextIndexForNode - 1).map(e -> e.term).orElse(0);
+                                final int prevLogTerm = logRepository.getEntryOpt(nextIndexForNode - 1).map(RaftLogEntry::term).orElse(0);
 
                                 log.debug("node {} : nextIndexForNode={} newEntries={} prevLogTerm={}", targetNodeId, nextIndexForNode, newEntries, prevLogTerm);
 
@@ -511,7 +503,7 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
             lastApplied++;
             final RaftLogEntry<T> raftLogEntry = logRepository.getEntry(lastApplied);
             log.debug("Applying to RSM: {}", raftLogEntry);
-            final S result = rsm.applyCommand(raftLogEntry.cmd);
+            final S result = rsm.applyCommand(raftLogEntry.cmd());
 
             if (currentState == RaftNodeState.LEADER) {
 

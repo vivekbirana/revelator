@@ -1,22 +1,13 @@
-package exchange.core2.revelator.raft;
+package exchange.core2.revelator.raft.messages;
+
+import exchange.core2.revelator.raft.RsmMessageFactory;
 
 import java.nio.ByteBuffer;
 
 /**
  * each entry contains command for state machine, and term when entry was received by leader
  */
-public class RaftLogEntry<T extends RsmRequest> {
-
-    // term when entry was received by leader
-    public final int term;
-
-    // command
-    public final T cmd;
-
-    public RaftLogEntry(int term, T cmd) {
-        this.term = term;
-        this.cmd = cmd;
-    }
+public record RaftLogEntry<T extends RsmRequest>(int term, T cmd) {
 
     public void serialize(ByteBuffer buffer) {
         buffer.putInt(term);
@@ -32,7 +23,7 @@ public class RaftLogEntry<T extends RsmRequest> {
     }
 
     public static <T extends RsmRequest> RaftLogEntry<T> create(ByteBuffer buffer,
-                                                                SerializableMessageFactory<T, ?> factory) {
+                                                                RsmMessageFactory<T, ?> factory) {
         final int term = buffer.getInt();
         final T cmd = factory.createRequest(buffer);
         return new RaftLogEntry<T>(term, cmd);

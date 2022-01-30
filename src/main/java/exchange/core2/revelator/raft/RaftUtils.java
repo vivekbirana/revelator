@@ -1,6 +1,6 @@
 package exchange.core2.revelator.raft;
 
-import com.sun.jna.platform.win32.COM.util.Factory;
+import exchange.core2.revelator.raft.messages.*;
 
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
@@ -13,7 +13,7 @@ public class RaftUtils {
     public static <T extends RsmRequest, S extends RsmResponse> RpcMessage createMessageByType(
             int messageType,
             ByteBuffer buffer,
-            SerializableMessageFactory<T, S> factory) {
+            RsmMessageFactory<T, S> factory) {
 
         return switch (messageType) {
             case RpcMessage.REQUEST_APPEND_ENTRIES -> CmdRaftAppendEntries.create(buffer, factory);

@@ -1,4 +1,6 @@
-package exchange.core2.revelator.raft;
+package exchange.core2.revelator.raft.messages;
+
+import exchange.core2.revelator.raft.RsmMessageFactory;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -32,7 +34,7 @@ public record CmdRaftAppendEntries<T extends RsmRequest>(int term,
 
     public static <T extends RsmRequest> CmdRaftAppendEntries<T> create(
             ByteBuffer buffer,
-            SerializableMessageFactory<T, ?> factory) {
+            RsmMessageFactory<T, ?> factory) {
 
         final int term = buffer.getInt();
         final int leaderId = buffer.getInt();

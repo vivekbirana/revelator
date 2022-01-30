@@ -1,5 +1,9 @@
 package exchange.core2.revelator.raft;
 
+import exchange.core2.revelator.raft.messages.CustomCommandRequest;
+import exchange.core2.revelator.raft.messages.CustomCommandResponse;
+import exchange.core2.revelator.raft.messages.RsmRequest;
+import exchange.core2.revelator.raft.messages.RsmResponse;
 import org.agrona.PrintBufferUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,7 +30,7 @@ public class RpcClient<T extends RsmRequest, S extends RsmResponse> {
     private final AtomicLong correlationIdCounter = new AtomicLong(1L);
     private final Map<Long, CompletableFuture<CustomCommandResponse<S>>> futureMap = new ConcurrentHashMap<>();
     private final Map<Integer, RaftUtils.RemoteUdpSocket> socketMap;
-    private final SerializableMessageFactory<T, S> msgFactory;
+    private final RsmMessageFactory<T, S> msgFactory;
 
     private volatile int leaderNodeId = 0;
 
@@ -36,7 +40,7 @@ public class RpcClient<T extends RsmRequest, S extends RsmResponse> {
 
 
     public RpcClient(final Map<Integer, String> remoteNodes,
-                     final SerializableMessageFactory<T, S> msgFactory) {
+                     final RsmMessageFactory<T, S> msgFactory) {
 
         this.socketMap = RaftUtils.createHostMap(remoteNodes);
         this.msgFactory = msgFactory;

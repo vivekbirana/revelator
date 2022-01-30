@@ -1,4 +1,4 @@
-package exchange.core2.revelator.raft;
+package exchange.core2.revelator.raft.messages;
 
 import java.nio.ByteBuffer;
 
