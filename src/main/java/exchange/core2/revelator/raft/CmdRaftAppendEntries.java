@@ -7,12 +7,12 @@ import java.util.List;
 /**
  * Invoked by leader to replicate log entries (5.3); also used as heartbeat (5.2).
  */
-public record CmdRaftAppendEntries(int term,
-                                   int leaderId,
-                                   long prevLogIndex,
-                                   int prevLogTerm,
-                                   List<RaftLogEntry> entries,
-                                   long leaderCommit) implements RpcRequest {
+public record CmdRaftAppendEntries<T extends RsmRequest>(int term,
+                                                         int leaderId,
+                                                         long prevLogIndex,
+                                                         int prevLogTerm,
+                                                         List<RaftLogEntry<T>> entries,
+                                                         long leaderCommit) implements RpcRequest {
 
     @Override
     public int getMessageType() {
@@ -30,7 +30,9 @@ public record CmdRaftAppendEntries(int term,
         buffer.putLong(leaderCommit);
     }
 
-    public static CmdRaftAppendEntries create(ByteBuffer buffer) {
+    public static <T extends RsmRequest> CmdRaftAppendEntries<T> create(
+            ByteBuffer buffer,
+            SerializableMessageFactory<T, ?> factory) {
 
         final int term = buffer.getInt();
         final int leaderId = buffer.getInt();
@@ -38,14 +40,15 @@ public record CmdRaftAppendEntries(int term,
         final int prevLogTerm = buffer.getInt();
         final int numEntries = buffer.getInt();
 
-        final List<RaftLogEntry> entries = new ArrayList<>(numEntries);
+        final List<RaftLogEntry<T>> entries = new ArrayList<>(numEntries);
         for (int i = 0; i < numEntries; i++) {
-            entries.add(RaftLogEntry.create(buffer));
+
+            entries.add(RaftLogEntry.create(buffer, factory));
         }
 
         final long leaderCommit = buffer.getLong();
 
-        return new CmdRaftAppendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
+        return new CmdRaftAppendEntries<>(term, leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit);
     }
 
     @Override

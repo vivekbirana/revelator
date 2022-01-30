@@ -1,10 +1,12 @@
 package exchange.core2.revelator.raft;
 
-public interface ReplicatedStateMachine {
+public interface ReplicatedStateMachine<T extends RsmRequest, S extends RsmResponse> {
 
-    // TODO switch to custom messages
-    int apply(long value);
+    S applyCommand(T command);
 
-    int getState();
+    // TODO query
+    S applyQuery(T query);
+
+    S getState();
 
 }

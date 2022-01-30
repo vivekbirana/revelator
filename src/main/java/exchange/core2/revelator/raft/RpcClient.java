@@ -19,25 +19,27 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
-public class RpcClient {
+public class RpcClient<T extends RsmRequest, S extends RsmResponse> {
 
     private static final Logger logger = LoggerFactory.getLogger(RpcClient.class);
 
     private final AtomicLong correlationIdCounter = new AtomicLong(1L);
-    private final Map<Long, CompletableFuture<CustomCommandResponse>> futureMap = new ConcurrentHashMap<>();
+    private final Map<Long, CompletableFuture<CustomCommandResponse<S>>> futureMap = new ConcurrentHashMap<>();
     private final Map<Integer, RaftUtils.RemoteUdpSocket> socketMap;
+    private final SerializableMessageFactory<T, S> msgFactory;
 
     private volatile int leaderNodeId = 0;
 
     private final DatagramSocket serverSocket;
 
-    private volatile boolean active = true;
+    private volatile boolean active = true; // TODO implement
 
 
-    public RpcClient(final Map<Integer, String> remoteNodes) {
+    public RpcClient(final Map<Integer, String> remoteNodes,
+                     final SerializableMessageFactory<T, S> msgFactory) {
 
         this.socketMap = RaftUtils.createHostMap(remoteNodes);
-
+        this.msgFactory = msgFactory;
 
         try {
             this.serverSocket = new DatagramSocket();
@@ -69,9 +71,9 @@ public class RpcClient {
 
                 logger.debug("RECEIVED from {} (c={}): {}", receivePacket.getAddress(), correlationId, PrintBufferUtil.hexDump(receivePacket.getData(), 0, receivePacket.getLength()));
 
-                final CustomCommandResponse msg = CustomCommandResponse.create(bb);
+                final CustomCommandResponse<S> msg = CustomCommandResponse.create(bb, msgFactory);
 
-                final CompletableFuture<CustomCommandResponse> future = futureMap.remove(correlationId);
+                final CompletableFuture<CustomCommandResponse<S>> future = futureMap.remove(correlationId);
                 if (future != null) {
                     // complete future for future-based-calls
                     future.complete(msg);
@@ -89,7 +91,7 @@ public class RpcClient {
         serverSocket.close();
     }
 
-    public int callRpcSync(final long data, final int timeoutMs) throws TimeoutException {
+    public S callRpcSync(final T data, final int timeoutMs) throws TimeoutException {
 
         final int leaderNodeIdInitial = leaderNodeId;
         int leaderNodeIdLocal = leaderNodeIdInitial;
@@ -101,10 +103,10 @@ public class RpcClient {
         for (int i = 0; i < 5; i++) {
 
             final long correlationId = correlationIdCounter.incrementAndGet();
-            final CompletableFuture<CustomCommandResponse> future = new CompletableFuture<>();
+            final CompletableFuture<CustomCommandResponse<S>> future = new CompletableFuture<>();
             futureMap.put(correlationId, future);
 
-            final CustomCommandRequest request = new CustomCommandRequest(data);
+            final CustomCommandRequest<T> request = new CustomCommandRequest<>(data);
 
             // send request to last known leader
             callRpc(request, leaderNodeIdLocal, correlationId);
@@ -112,7 +114,7 @@ public class RpcClient {
             try {
 
                 // block waiting for response
-                final CustomCommandResponse response = future.get(timeoutMs, TimeUnit.MILLISECONDS);
+                final CustomCommandResponse<S> response = future.get(timeoutMs, TimeUnit.MILLISECONDS);
 
                 if (response.success()) {
 
@@ -121,7 +123,7 @@ public class RpcClient {
                         leaderNodeId = leaderNodeIdLocal;
                     }
 
-                    return response.hash();
+                    return response.rsmResponse();
 
                 } else {
 
@@ -157,7 +159,7 @@ public class RpcClient {
         throw new TimeoutException();
     }
 
-    private void callRpc(CustomCommandRequest request, int toNodeId, long correlationId) {
+    private void callRpc(CustomCommandRequest<T> request, int toNodeId, long correlationId) {
 
         final byte[] array = new byte[64];
         ByteBuffer bb = ByteBuffer.wrap(array);

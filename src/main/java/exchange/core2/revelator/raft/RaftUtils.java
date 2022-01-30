@@ -1,5 +1,7 @@
 package exchange.core2.revelator.raft;
 
+import com.sun.jna.platform.win32.COM.util.Factory;
+
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
@@ -8,14 +10,18 @@ import java.util.Map;
 public class RaftUtils {
 
 
-    public static RpcMessage createMessageByType(int messageType, ByteBuffer buffer) {
+    public static <T extends RsmRequest, S extends RsmResponse> RpcMessage createMessageByType(
+            int messageType,
+            ByteBuffer buffer,
+            SerializableMessageFactory<T, S> factory) {
+
         return switch (messageType) {
-            case RpcMessage.REQUEST_APPEND_ENTRIES -> CmdRaftAppendEntries.create(buffer);
+            case RpcMessage.REQUEST_APPEND_ENTRIES -> CmdRaftAppendEntries.create(buffer, factory);
             case RpcMessage.RESPONSE_APPEND_ENTRIES -> CmdRaftAppendEntriesResponse.create(buffer);
             case RpcMessage.REQUEST_VOTE -> CmdRaftVoteRequest.create(buffer);
             case RpcMessage.RESPONSE_VOTE -> CmdRaftVoteResponse.create(buffer);
-            case RpcMessage.REQUEST_CUSTOM -> CustomCommandRequest.create(buffer);
-            case RpcMessage.RESPONSE_CUSTOM -> CustomCommandResponse.create(buffer);
+            case RpcMessage.REQUEST_CUSTOM -> CustomCommandRequest.create(buffer, factory);
+            case RpcMessage.RESPONSE_CUSTOM -> CustomCommandResponse.create(buffer, factory);
             default -> throw new IllegalArgumentException("Unknown messageType: " + messageType);
         };
     }

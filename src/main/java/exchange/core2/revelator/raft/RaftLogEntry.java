@@ -5,22 +5,22 @@ import java.nio.ByteBuffer;
 /**
  * each entry contains command for state machine, and term when entry was received by leader
  */
-public class RaftLogEntry {
+public class RaftLogEntry<T extends RsmRequest> {
 
     // term when entry was received by leader
     public final int term;
 
     // command
-    public final long cmd;
+    public final T cmd;
 
-    public RaftLogEntry(int term, long cmd) {
+    public RaftLogEntry(int term, T cmd) {
         this.term = term;
         this.cmd = cmd;
     }
 
     public void serialize(ByteBuffer buffer) {
         buffer.putInt(term);
-        buffer.putLong(cmd);
+        cmd.serialize(buffer);
     }
 
     @Override
@@ -31,9 +31,10 @@ public class RaftLogEntry {
                 '}';
     }
 
-    public static RaftLogEntry create(ByteBuffer buffer) {
+    public static <T extends RsmRequest> RaftLogEntry<T> create(ByteBuffer buffer,
+                                                                SerializableMessageFactory<T, ?> factory) {
         final int term = buffer.getInt();
-        final long cmd = buffer.getLong();
-        return new RaftLogEntry(term, cmd);
+        final T cmd = factory.createRequest(buffer);
+        return new RaftLogEntry<T>(term, cmd);
     }
 }

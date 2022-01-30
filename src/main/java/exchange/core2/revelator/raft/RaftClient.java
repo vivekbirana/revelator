@@ -23,7 +23,7 @@ public class RaftClient {
         }
     }
 
-    private RpcClient rpcClient;
+    private final RpcClient<CustomRsmCommand, CustomRsmResponse> rpcClient;
 
     public RaftClient() {
 
@@ -33,14 +33,14 @@ public class RaftClient {
                 1, "localhost:3779",
                 2, "localhost:3780");
 
-        this.rpcClient = new RpcClient(remoteNodes);
+        this.rpcClient = new RpcClient<>(remoteNodes, new CustomRsm());
     }
 
     public void sendEcho(long data) {
         try {
             log.info("send >>> data={}", data);
-            final int hash = rpcClient.callRpcSync(data, 500);
-            log.info("recv <<< hash={}", hash);
+            final CustomRsmResponse res = rpcClient.callRpcSync(new CustomRsmCommand(data), 500);
+            log.info("recv <<< hash={}", res.hash);
         } catch (Exception ex) {
             log.warn("Exception: ", ex);
         }

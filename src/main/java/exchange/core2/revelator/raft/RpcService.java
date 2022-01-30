@@ -12,7 +12,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class RpcService<T extends RpcRequest> implements AutoCloseable {
+public class RpcService<T extends RsmRequest, S extends RsmResponse> implements AutoCloseable {
 
     private static final Logger logger = LoggerFactory.getLogger(RpcService.class);
 
@@ -21,21 +21,24 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
     private final Map<Integer, RaftUtils.RemoteUdpSocket> socketMap;
     private final int serverPort;
     private final int serverNodeId;
-    private final RpcHandler handler;
+    private final RpcHandler<T, S> handler;
+    private final SerializableMessageFactory<T, S> msgFactory;
 
-    private DatagramSocket serverSocket;
-//    private final SerializableMessageFactory<T> msgFactory;
+    private final DatagramSocket serverSocket;
 
     private volatile boolean active = true;
 
     public RpcService(Map<Integer, String> remoteNodes,
-                      RpcHandler handler,
+                      RpcHandler<T, S> handler,
+                      SerializableMessageFactory<T, S> msgFactory,
                       int serverNodeId) {
 
-        this.socketMap = RaftUtils.createHostMap(remoteNodes);;
+        this.socketMap = RaftUtils.createHostMap(remoteNodes);
+        ;
         this.handler = handler;
         this.serverPort = socketMap.get(serverNodeId).port;
         this.serverNodeId = serverNodeId;
+        this.msgFactory = msgFactory;
 
         try {
             this.serverSocket = new DatagramSocket(serverPort);
@@ -77,7 +80,7 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
 
                 logger.debug("RECEIVED from {} mt={}: {}", nodeId, messageType, PrintBufferUtil.hexDump(receivePacket.getData(), 0, receivePacket.getLength()));
 
-                final RpcMessage msg = RaftUtils.createMessageByType(messageType, bb);
+                final RpcMessage msg = RaftUtils.createMessageByType(messageType, bb, msgFactory);
                 // TODO use msgFactory
 
                 if (messageType < 0) {
@@ -100,7 +103,14 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
                         final InetAddress address = receivePacket.getAddress();
                         final int port = receivePacket.getPort();
 
-                        final CustomCommandResponse response = handler.handleClientRequest(address, port, correlationId, (CustomCommandRequest) msg);
+                        final CustomCommandRequest<T> msgT = (CustomCommandRequest<T>) msg;
+
+                        final CustomCommandResponse<S> response = handler.handleClientRequest(
+                                address,
+                                port,
+                                correlationId,
+                                msgT);
+
                         if (response != null) {
                             respondToClient(address, port, correlationId, response);
                         }
@@ -126,7 +136,6 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
         logger.info("UDP server shutdown");
         serverSocket.close();
     }
-
 
 
     private void sendResponse(int callerNodeId, long correlationId, RpcResponse response) {
@@ -215,7 +224,7 @@ public class RpcService<T extends RpcRequest> implements AutoCloseable {
 
 
     @Override
-    public void close() throws Exception {
+    public void close() {
 
         active = false;
     }

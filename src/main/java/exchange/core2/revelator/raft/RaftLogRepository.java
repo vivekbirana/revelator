@@ -7,18 +7,18 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
-public class RaftLogRepository {
+public class RaftLogRepository<T extends RsmRequest> {
 
 
     private static final Logger log = LoggerFactory.getLogger(RaftLogRepository.class);
 
-    private final List<RaftLogEntry> logEntries = new ArrayList<>(); // TODO change to persistent storage with long-index
+    private final List<RaftLogEntry<T>> logEntries = new ArrayList<>(); // TODO change to persistent storage with long-index
 
-    public RaftLogEntry getEntry(long index) {
+    public RaftLogEntry<T> getEntry(long index) {
         return logEntries.get((int) index - 1);
     }
 
-    public Optional<RaftLogEntry> getEntryOpt(long index) {
+    public Optional<RaftLogEntry<T>> getEntryOpt(long index) {
         if (index < 1 || index > logEntries.size()) {
             return Optional.empty();
         }
@@ -52,7 +52,7 @@ public class RaftLogRepository {
         }
     }
 
-    public long append(final RaftLogEntry logEntry) {
+    public long append(final RaftLogEntry<T> logEntry) {
         logEntries.add(logEntry);
         return logEntries.size(); // starting from index=1
     }
@@ -71,12 +71,12 @@ public class RaftLogRepository {
 
     // TODO unittest
 
-    public void appendOrOverride(final List<RaftLogEntry> newEntries, long prevLogIndex) {
+    public void appendOrOverride(final List<RaftLogEntry<T>> newEntries, long prevLogIndex) {
 
         log.debug("appendOrOverride(newEntries={} , prevLogIndex={}", newEntries, prevLogIndex);
 
         for (int i = 0; i < newEntries.size(); i++) {
-            final RaftLogEntry newEntry = newEntries.get(i);
+            final RaftLogEntry<T> newEntry = newEntries.get(i);
 
             if ((prevLogIndex + i) < logEntries.size()) {
 
@@ -104,7 +104,7 @@ public class RaftLogRepository {
     }
 
     // 1
-    public List<RaftLogEntry> getEntriesStartingFrom(long nextIndex) {
+    public List<RaftLogEntry<T>> getEntriesStartingFrom(long nextIndex) {
         if (getLastLogIndex() < nextIndex) {
             return List.of();
         }

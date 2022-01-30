@@ -2,7 +2,9 @@ package exchange.core2.revelator.raft;
 
 import java.nio.ByteBuffer;
 
-public record CustomCommandResponse(int hash, int leaderNodeId, boolean success) implements RpcResponse {
+public record CustomCommandResponse<S extends RsmResponse>(S rsmResponse,
+                                                           int leaderNodeId,
+                                                           boolean success) implements RpcResponse {
 
     @Override
     public int getMessageType() {
@@ -11,18 +13,18 @@ public record CustomCommandResponse(int hash, int leaderNodeId, boolean success)
 
     @Override
     public void serialize(ByteBuffer buffer) {
-        buffer.putInt(hash);
         buffer.putInt(leaderNodeId);
-        buffer.put(success ? (byte) 1 : (byte) 0);
+        buffer.putInt(success ? 1 : 0);
+        rsmResponse.serialize(buffer);
     }
 
-    public static CustomCommandResponse create(ByteBuffer buffer) {
+    public static <S extends RsmResponse> CustomCommandResponse<S> create(ByteBuffer buffer, SerializableMessageFactory<?, S> factory) {
 
-        final int hash = buffer.getInt();
         final int leaderNodeId = buffer.getInt();
-        final boolean success = buffer.get() == 1;
+        final boolean success = buffer.getInt() == 1;
+        final S rsmResponse = factory.createResponse(buffer);
 
-        return new CustomCommandResponse(hash, leaderNodeId, success);
+        return new CustomCommandResponse<>(rsmResponse, leaderNodeId, success);
     }
 
 }
