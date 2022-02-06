@@ -23,7 +23,8 @@ public class RpcService<T extends RsmRequest, S extends RsmResponse> implements 
     private final int serverPort;
     private final int serverNodeId;
     private final RpcHandler<T, S> handler;
-    private final RsmMessageFactory<T, S> msgFactory;
+    private final RsmRequestFactory<T> msgFactory;
+    private final RsmResponseFactory<S> responseFactory;
 
     private final DatagramSocket serverSocket;
 
@@ -31,15 +32,16 @@ public class RpcService<T extends RsmRequest, S extends RsmResponse> implements 
 
     public RpcService(Map<Integer, String> remoteNodes,
                       RpcHandler<T, S> handler,
-                      RsmMessageFactory<T, S> msgFactory,
+                      RsmRequestFactory<T> msgFactory,
+                      RsmResponseFactory<S> responseFactory,
                       int serverNodeId) {
 
         this.socketMap = RaftUtils.createHostMap(remoteNodes);
-        ;
         this.handler = handler;
         this.serverPort = socketMap.get(serverNodeId).port;
         this.serverNodeId = serverNodeId;
         this.msgFactory = msgFactory;
+        this.responseFactory = responseFactory;
 
         try {
             this.serverSocket = new DatagramSocket(serverPort);
@@ -81,7 +83,7 @@ public class RpcService<T extends RsmRequest, S extends RsmResponse> implements 
 
                 logger.debug("RECEIVED from {} mt={}: {}", nodeId, messageType, PrintBufferUtil.hexDump(receivePacket.getData(), 0, receivePacket.getLength()));
 
-                final RpcMessage msg = RaftUtils.createMessageByType(messageType, bb, msgFactory);
+                final RpcMessage msg = RaftUtils.createMessageByType(messageType, bb, msgFactory, responseFactory);
                 // TODO use msgFactory
 
                 if (messageType < 0) {
@@ -106,10 +108,13 @@ public class RpcService<T extends RsmRequest, S extends RsmResponse> implements 
 
                         final CustomCommandRequest<T> msgT = (CustomCommandRequest<T>) msg;
 
+                        final long timeReceived = System.currentTimeMillis();
+
                         final CustomCommandResponse<S> response = handler.handleClientRequest(
                                 address,
                                 port,
                                 correlationId,
+                                timeReceived,
                                 msgT);
 
                         if (response != null) {

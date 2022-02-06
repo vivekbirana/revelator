@@ -1,4 +1,4 @@
-package exchange.core2.revelator.raft;
+package exchange.core2.revelator.raft.repository;
 
 import exchange.core2.revelator.raft.messages.RaftLogEntry;
 import exchange.core2.revelator.raft.messages.RsmRequest;
@@ -7,33 +7,20 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 
-public class RaftLogRepository<T extends RsmRequest> {
+public class RaftMemLogRepository<T extends RsmRequest> implements IRaftLogRepository<T> {
 
-
-    private static final Logger log = LoggerFactory.getLogger(RaftLogRepository.class);
+    private static final Logger log = LoggerFactory.getLogger(RaftMemLogRepository.class);
 
     private final List<RaftLogEntry<T>> logEntries = new ArrayList<>(); // TODO change to persistent storage with long-index
 
-    public RaftLogEntry<T> getEntry(long index) {
-        return logEntries.get((int) index - 1);
-    }
-
-    public Optional<RaftLogEntry<T>> getEntryOpt(long index) {
-        if (index < 1 || index > logEntries.size()) {
-            return Optional.empty();
-        }
-
-        return Optional.of(logEntries.get((int) index - 1));
-    }
-
-    public long lastEntryInTerm(long indexAfter, long indexBeforeIncl, int term) {
+    @Override
+    public long findLastEntryInTerm(long indexAfter, long indexBeforeIncl, int term) {
 
         int idx = (int) indexAfter;
 
         for (int i = (int) indexAfter + 1; i <= indexBeforeIncl; i++) {
-            log.debug("i={}", i);
+            //log.debug("i={}", i);
             if (logEntries.get(i - 1).term() == term) {
                 idx = i;
             }
@@ -41,11 +28,12 @@ public class RaftLogRepository<T extends RsmRequest> {
         return idx;
     }
 
-
+    @Override
     public long getLastLogIndex() {
         return logEntries.size(); // 0 = no records
     }
 
+    @Override
     public int getLastLogTerm() {
         if (logEntries.isEmpty()) {
             return 0; // return term 0 by default
@@ -54,9 +42,10 @@ public class RaftLogRepository<T extends RsmRequest> {
         }
     }
 
-    public long append(final RaftLogEntry<T> logEntry) {
+    @Override
+    public long appendEntry(final RaftLogEntry<T> logEntry, final boolean endOfBatch) {
         logEntries.add(logEntry);
-        return logEntries.size(); // starting from index=1
+        return getLastLogIndex(); // starting from index=1
     }
 
 
@@ -73,6 +62,7 @@ public class RaftLogRepository<T extends RsmRequest> {
 
     // TODO unittest
 
+    @Override
     public void appendOrOverride(final List<RaftLogEntry<T>> newEntries, long prevLogIndex) {
 
         log.debug("appendOrOverride(newEntries={} , prevLogIndex={}", newEntries, prevLogIndex);
@@ -106,13 +96,29 @@ public class RaftLogRepository<T extends RsmRequest> {
     }
 
     // 1
-    public List<RaftLogEntry<T>> getEntriesStartingFrom(long nextIndex) {
-        if (getLastLogIndex() < nextIndex) {
+    @Override
+    public List<RaftLogEntry<T>> getEntries(long indexFrom, int limit) {
+
+        indexFrom = Math.max(indexFrom, 1L);
+
+        if (getLastLogIndex() < indexFrom) {
             return List.of();
         }
 
-        log.debug("getEntriesStartingFrom({}): logEntries: {}", nextIndex, logEntries);
+        log.debug("getEntriesStartingFrom({}): logEntries: {}", indexFrom, logEntries);
 
-        return new ArrayList<>(logEntries.subList((int) nextIndex - 1, logEntries.size()));
+        final long indexTo = indexFrom + limit;
+
+        final int indexToMin = (int) Math.min(indexTo, logEntries.size());
+
+        log.debug("indexTo={} indexToMin={}", indexTo, indexToMin);
+
+        final List<RaftLogEntry<T>> sublistView = logEntries.subList((int) indexFrom - 1, indexToMin);
+        return new ArrayList<>(sublistView);
+    }
+
+    @Override
+    public void close() {
+        // do nothing
     }
 }

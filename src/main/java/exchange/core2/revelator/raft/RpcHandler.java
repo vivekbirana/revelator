@@ -10,6 +10,10 @@ public interface RpcHandler<T extends RsmRequest, S extends RsmResponse> {
 
     void handleNodeResponse(int nodeId, RpcResponse response, long correlationId);
 
-    CustomCommandResponse<S> handleClientRequest(InetAddress address, int port, long correlationId, CustomCommandRequest<T> request);
+    CustomCommandResponse<S> handleClientRequest(InetAddress address,
+                                                 int port,
+                                                 long correlationId,
+                                                 long timeReceived,
+                                                 CustomCommandRequest<T> request);
 
 }

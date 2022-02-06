@@ -10,7 +10,7 @@ public class CustomNode {
 
         final CustomRsm customRsm = new CustomRsm();
 
-        new RaftNode<>(thisNodeId, customRsm, customRsm);
+        new RaftNode<>(thisNodeId, customRsm, customRsm, customRsm);
     }
 
 }

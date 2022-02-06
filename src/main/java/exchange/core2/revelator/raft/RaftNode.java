@@ -2,6 +2,8 @@ package exchange.core2.revelator.raft;
 
 
 import exchange.core2.revelator.raft.messages.*;
+import exchange.core2.revelator.raft.repository.IRaftLogRepository;
+import exchange.core2.revelator.raft.repository.RaftMemLogRepository;
 import org.eclipse.collections.impl.map.mutable.primitive.LongObjectHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +23,7 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
     public static final int ELECTION_TIMEOUT_MAX_MS = 2800;
     public static final int APPEND_REPLY_TIMEOUT_MAX_MS = 1000;
 
+    public static final int TRANSFER_ITEMS_NUM_LIMIT = 10;
 
     /* **** Persistent state on all servers: (Updated on stable storage before responding to RPCs) */
 
@@ -31,7 +34,7 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
     private int votedFor = -1;
 
     // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
-    private final RaftLogRepository<T> logRepository = new RaftLogRepository<>();
+    private final IRaftLogRepository<T> logRepository = new RaftMemLogRepository<>();
 
     /* **** Volatile state on all servers: */
 
@@ -85,7 +88,8 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
 
     public RaftNode(int thisNodeId,
                     ReplicatedStateMachine<T, S> rsm,
-                    RsmMessageFactory<T, S> msgFactory) {
+                    RsmRequestFactory<T> msgFactory,
+                    RsmResponseFactory<S> respFactory) {
 
         // localhost:3778, localhost:3779, localhost:3780
         final Map<Integer, String> remoteNodes = Map.of(
@@ -250,7 +254,7 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
 
                                 if (matchIndex[fromNodeId] > commitIndex) {
                                     log.debug("lastEntryInTerm({}, {}, {});", commitIndex, matchIndex[fromNodeId], currentTerm);
-                                    final long lastEntryInTerm = logRepository.lastEntryInTerm(commitIndex, matchIndex[fromNodeId], currentTerm);
+                                    final long lastEntryInTerm = logRepository.findLastEntryInTerm(commitIndex, matchIndex[fromNodeId], currentTerm);
 
                                     final long newCommitIndex = Math.max(
                                             Math.max(commitIndex, matchIndex[fromNodeId]),
@@ -285,6 +289,7 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
             public CustomCommandResponse<S> handleClientRequest(final InetAddress address,
                                                                 final int port,
                                                                 final long correlationId,
+                                                                final long timeReceived,
                                                                 final CustomCommandRequest<T> request) {
                 synchronized (this) {
 
@@ -293,8 +298,8 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
                         // respond after entry applied to state machine (5.3)
 
                         // adding new record into the local log
-                        final RaftLogEntry<T> logEntry = new RaftLogEntry<>(currentTerm, request.rsmRequest());
-                        final long index = logRepository.append(logEntry);
+                        final RaftLogEntry<T> logEntry = new RaftLogEntry<>(currentTerm, request.rsmRequest(), timeReceived);
+                        final long index = logRepository.appendEntry(logEntry, true);
 
                         // remember client request (TODO !! on batch migration - should refer to the last record)
                         clientResponsesMap.put(index, new ClientAddress(address, port, correlationId));
@@ -302,7 +307,7 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
                     } else {
                         log.debug("Redirecting client to leader nodeId={}", votedFor);
                         // inform client about different leader
-                        return new CustomCommandResponse<>(msgFactory.emptyResponse(), votedFor, false);
+                        return new CustomCommandResponse<>(respFactory.emptyResponse(), votedFor, false);
                     }
                 }
 
@@ -312,7 +317,7 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
         };
 
         // todo remove from constructor
-        rpcService = new RpcService<>(remoteNodes, handler, msgFactory, thisNodeId);
+        rpcService = new RpcService<>(remoteNodes, handler, msgFactory, respFactory, thisNodeId);
 
         log.info("HEARTBEAT_TIMEOUT_MS={}", HEARTBEAT_TIMEOUT_MS);
         log.info("ELECTION_TIMEOUT_MS={}..{}", ELECTION_TIMEOUT_MIN_MS, ELECTION_TIMEOUT_MAX_MS);
@@ -376,8 +381,13 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
 
                             if (canRetry || timeToSendHeartbeat) {
 
-                                final List<RaftLogEntry<T>> newEntries = logRepository.getEntriesStartingFrom(nextIndexForNode);
-                                final int prevLogTerm = logRepository.getEntryOpt(nextIndexForNode - 1).map(RaftLogEntry::term).orElse(0);
+                                final List<RaftLogEntry<T>> newEntries = logRepository.getEntries(nextIndexForNode, TRANSFER_ITEMS_NUM_LIMIT);
+
+                                // avoid additional request
+                                final int prevLogTerm = logRepository.getEntries(nextIndexForNode - 1, 1).stream()
+                                        .findFirst()
+                                        .map(RaftLogEntry::term)
+                                        .orElse(0);
 
                                 log.debug("node {} : nextIndexForNode={} newEntries={} prevLogTerm={}", targetNodeId, nextIndexForNode, newEntries, prevLogTerm);
 
@@ -499,9 +509,18 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
         /*
         All Servers: If commitIndex > lastApplied: increment lastApplied, apply log[lastApplied] to state machine (5.3)
         */
+
+        // TODO request range (up to commitIndex)
+        final List<RaftLogEntry<T>> entries = logRepository.getEntries(lastApplied, Integer.MAX_VALUE);
+        int idx = 0;
+
         while (lastApplied < commitIndex) {
             lastApplied++;
-            final RaftLogEntry<T> raftLogEntry = logRepository.getEntry(lastApplied);
+//            final RaftLogEntry<T> raftLogEntry = logRepository.getEntryOpt(lastApplied)
+//                    .orElseThrow(() -> new RuntimeException("Can not find pending entry index=" + lastApplied + " in the repository"));
+
+            final RaftLogEntry<T> raftLogEntry = entries.get(idx++);
+
             log.debug("Applying to RSM: {}", raftLogEntry);
             final S result = rsm.applyCommand(raftLogEntry.cmd());
 

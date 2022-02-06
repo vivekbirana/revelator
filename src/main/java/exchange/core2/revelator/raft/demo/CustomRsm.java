@@ -1,14 +1,19 @@
 package exchange.core2.revelator.raft.demo;
 
 import exchange.core2.revelator.raft.ReplicatedStateMachine;
-import exchange.core2.revelator.raft.RsmMessageFactory;
+import exchange.core2.revelator.raft.RsmRequestFactory;
+import exchange.core2.revelator.raft.RsmResponseFactory;
+import net.openhft.chronicle.bytes.BytesOut;
 import org.agrona.collections.Hashing;
 
+import java.io.DataInputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 
 public class CustomRsm implements
         ReplicatedStateMachine<CustomRsmCommand, CustomRsmResponse>,
-        RsmMessageFactory<CustomRsmCommand, CustomRsmResponse> {
+        RsmRequestFactory<CustomRsmCommand>,
+        RsmResponseFactory<CustomRsmResponse> {
 
     public static final CustomRsmResponse EMPTY_RSM_RESPONSE = new CustomRsmResponse(0);
 
@@ -28,13 +33,14 @@ public class CustomRsm implements
     }
 
     @Override
-    public CustomRsmResponse getState() {
-        return new CustomRsmResponse(hash);
+    public CustomRsmCommand createRequest(ByteBuffer buffer) {
+        return CustomRsmCommand.create(buffer);
     }
 
     @Override
-    public CustomRsmCommand createRequest(ByteBuffer buffer) {
-        return CustomRsmCommand.create(buffer);
+    public CustomRsmCommand createRequest(DataInputStream dis) throws IOException {
+
+        return CustomRsmCommand.create(dis);
     }
 
     @Override
@@ -45,5 +51,10 @@ public class CustomRsm implements
     @Override
     public CustomRsmResponse emptyResponse() {
         return EMPTY_RSM_RESPONSE;
+    }
+
+    @Override
+    public void writeMarshallable(BytesOut bytes) {
+        bytes.append(hash);
     }
 }

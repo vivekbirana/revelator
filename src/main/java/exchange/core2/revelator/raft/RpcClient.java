@@ -30,7 +30,7 @@ public class RpcClient<T extends RsmRequest, S extends RsmResponse> {
     private final AtomicLong correlationIdCounter = new AtomicLong(1L);
     private final Map<Long, CompletableFuture<CustomCommandResponse<S>>> futureMap = new ConcurrentHashMap<>();
     private final Map<Integer, RaftUtils.RemoteUdpSocket> socketMap;
-    private final RsmMessageFactory<T, S> msgFactory;
+    private final RsmResponseFactory<S> msgFactory;
 
     private volatile int leaderNodeId = 0;
 
@@ -40,7 +40,7 @@ public class RpcClient<T extends RsmRequest, S extends RsmResponse> {
 
 
     public RpcClient(final Map<Integer, String> remoteNodes,
-                     final RsmMessageFactory<T, S> msgFactory) {
+                     final RsmResponseFactory<S> msgFactory) {
 
         this.socketMap = RaftUtils.createHostMap(remoteNodes);
         this.msgFactory = msgFactory;

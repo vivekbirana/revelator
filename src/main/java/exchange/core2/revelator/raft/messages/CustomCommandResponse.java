@@ -1,6 +1,6 @@
 package exchange.core2.revelator.raft.messages;
 
-import exchange.core2.revelator.raft.RsmMessageFactory;
+import exchange.core2.revelator.raft.RsmResponseFactory;
 
 import java.nio.ByteBuffer;
 
@@ -20,7 +20,7 @@ public record CustomCommandResponse<S extends RsmResponse>(S rsmResponse,
         rsmResponse.serialize(buffer);
     }
 
-    public static <S extends RsmResponse> CustomCommandResponse<S> create(ByteBuffer buffer, RsmMessageFactory<?, S> factory) {
+    public static <S extends RsmResponse> CustomCommandResponse<S> create(ByteBuffer buffer, RsmResponseFactory<S> factory) {
 
         final int leaderNodeId = buffer.getInt();
         final boolean success = buffer.getInt() == 1;

@@ -13,7 +13,8 @@ public class RaftUtils {
     public static <T extends RsmRequest, S extends RsmResponse> RpcMessage createMessageByType(
             int messageType,
             ByteBuffer buffer,
-            RsmMessageFactory<T, S> factory) {
+            RsmRequestFactory<T> factory,
+            RsmResponseFactory<S> responseFactory) {
 
         return switch (messageType) {
             case RpcMessage.REQUEST_APPEND_ENTRIES -> CmdRaftAppendEntries.create(buffer, factory);
@@ -21,7 +22,7 @@ public class RaftUtils {
             case RpcMessage.REQUEST_VOTE -> CmdRaftVoteRequest.create(buffer);
             case RpcMessage.RESPONSE_VOTE -> CmdRaftVoteResponse.create(buffer);
             case RpcMessage.REQUEST_CUSTOM -> CustomCommandRequest.create(buffer, factory);
-            case RpcMessage.RESPONSE_CUSTOM -> CustomCommandResponse.create(buffer, factory);
+            case RpcMessage.RESPONSE_CUSTOM -> CustomCommandResponse.create(buffer, responseFactory);
             default -> throw new IllegalArgumentException("Unknown messageType: " + messageType);
         };
     }
