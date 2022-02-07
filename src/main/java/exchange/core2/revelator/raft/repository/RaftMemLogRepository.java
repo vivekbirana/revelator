@@ -99,7 +99,9 @@ public class RaftMemLogRepository<T extends RsmRequest> implements IRaftLogRepos
     @Override
     public List<RaftLogEntry<T>> getEntries(long indexFrom, int limit) {
 
-        indexFrom = Math.max(indexFrom, 1L);
+        if (indexFrom == 0L && limit == 1) {
+            return List.of();
+        }
 
         if (getLastLogIndex() < indexFrom) {
             return List.of();

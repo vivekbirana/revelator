@@ -511,7 +511,7 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
         */
 
         // TODO request range (up to commitIndex)
-        final List<RaftLogEntry<T>> entries = logRepository.getEntries(lastApplied, Integer.MAX_VALUE);
+        final List<RaftLogEntry<T>> entries = logRepository.getEntries(lastApplied + 1, Integer.MAX_VALUE);
         int idx = 0;
 
         while (lastApplied < commitIndex) {
