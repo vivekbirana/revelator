@@ -34,7 +34,7 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
     private int votedFor = -1;
 
     // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
-    private final IRaftLogRepository<T> logRepository = new RaftMemLogRepository<>();
+    private final IRaftLogRepository<T> logRepository;
 
     /* **** Volatile state on all servers: */
 
@@ -87,6 +87,7 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
 
 
     public RaftNode(int thisNodeId,
+                    IRaftLogRepository<T> logRepository,
                     ReplicatedStateMachine<T, S> rsm,
                     RsmRequestFactory<T> msgFactory,
                     RsmResponseFactory<S> respFactory) {
@@ -97,6 +98,7 @@ public class RaftNode<T extends RsmRequest, S extends RsmResponse> {
                 1, "localhost:3779",
                 2, "localhost:3780");
 
+        this.logRepository = logRepository;
         this.currentNodeId = thisNodeId;
         this.rsm = rsm;
         this.otherNodes = remoteNodes.keySet().stream().mapToInt(x -> x).filter(nodeId -> nodeId != thisNodeId).toArray();

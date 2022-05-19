@@ -28,7 +28,9 @@ public class RaftDiskLogRepository<T extends RsmRequest> implements IRaftLogRepo
 
 
     private final String exchangeId = "EC2R-TEST";
-    private final Path folder = Path.of("./raftlogs");
+    private final Path folder;
+
+    private final int nodeId;
 
     private RandomAccessFile raf;
     private FileChannel writeChannel;
@@ -62,8 +64,17 @@ public class RaftDiskLogRepository<T extends RsmRequest> implements IRaftLogRepo
 
     private final RsmRequestFactory<T> rsmRequestFactory;
 
-    public RaftDiskLogRepository(RsmRequestFactory<T> rsmRequestFactory) {
+    public RaftDiskLogRepository(RsmRequestFactory<T> rsmRequestFactory, int nodeId) {
         this.rsmRequestFactory = rsmRequestFactory;
+        this.nodeId = nodeId;
+
+        this.folder = Path.of("./raftlogs/node" + nodeId);
+
+        final long timestamp = System.currentTimeMillis();
+
+        baseSnapshotId = timestamp;
+
+        startNewFile(timestamp);
     }
 
 
@@ -255,6 +266,10 @@ public class RaftDiskLogRepository<T extends RsmRequest> implements IRaftLogRepo
     @Override
     public List<RaftLogEntry<T>> getEntries(long indexFrom, int limit) {
 
+        if (indexFrom == 0L && limit == 1) {
+            return List.of();
+        }
+
         if (indexFrom > lastIndex) {
             return List.of();
         }
@@ -266,6 +281,7 @@ public class RaftDiskLogRepository<T extends RsmRequest> implements IRaftLogRepo
         try {
             log.debug("Reading {} - floor idx:{} offset:{}", indexFrom, floorIndex, startOffset);
             readChannel.position(startOffset);
+            log.debug("Position ok");
         } catch (IOException ex) {
             throw new RuntimeException("can not read log at offset " + startOffset, ex);
         }

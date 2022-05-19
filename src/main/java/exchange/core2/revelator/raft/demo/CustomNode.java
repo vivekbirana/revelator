@@ -1,6 +1,8 @@
 package exchange.core2.revelator.raft.demo;
 
 import exchange.core2.revelator.raft.RaftNode;
+import exchange.core2.revelator.raft.repository.IRaftLogRepository;
+import exchange.core2.revelator.raft.repository.RaftMemLogRepository;
 
 public class CustomNode {
 
@@ -10,7 +12,10 @@ public class CustomNode {
 
         final CustomRsm customRsm = new CustomRsm();
 
-        new RaftNode<>(thisNodeId, customRsm, customRsm, customRsm);
+        //final RaftDiskLogRepository<CustomRsmCommand> repository = new RaftDiskLogRepository<>(customRsm, thisNodeId);
+        final IRaftLogRepository<CustomRsmCommand> repository = new RaftMemLogRepository<>();
+
+        new RaftNode<>(thisNodeId, repository, customRsm, customRsm, customRsm);
     }
 
 }
